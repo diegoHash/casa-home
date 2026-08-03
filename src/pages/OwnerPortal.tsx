@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import ChargeNotice from '../components/owner/ChargeNotice';
 import {
   AlertTriangle,
   ArrowRight,
@@ -105,7 +106,7 @@ export default function OwnerPortal() {
     <>
       <SectionTitle eyebrow="Resumen del propietario" title="Buenos días, Alejandro" description="Todo lo importante de tu apartamento y comunidad, en un solo lugar." />
       <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
-        <Card className="overflow-hidden bg-[#0b1d33] text-white">
+        <section className="overflow-hidden rounded-3xl border border-[#0b1d33]/8 text-white shadow-[0_12px_40px_rgba(8,29,51,0.045)]" style={{ backgroundColor: '#0b1d33' }}>
           <div className="relative p-7 sm:p-9">
             <div className="absolute right-0 top-0 h-48 w-48 rounded-full bg-[#d6af57]/15 blur-3xl" />
             <div className="relative flex flex-col justify-between gap-8 sm:flex-row sm:items-start">
@@ -121,10 +122,10 @@ export default function OwnerPortal() {
             </div>
             <div className="relative mt-8 flex flex-wrap gap-3">
               <button onClick={() => go('pagos')} className="rounded-full bg-[#f0cf77] px-5 py-3 text-sm font-bold text-[#0b1d33] transition hover:bg-white">Reportar pago</button>
-              <button onClick={() => go('finanzas')} className="rounded-full border border-white/20 px-5 py-3 text-sm font-bold transition hover:bg-white/10">Ver estado de cuenta</button>
+              <button onClick={() => go('finanzas')} className="rounded-full border border-white/20 px-5 py-3 text-sm font-bold transition hover:bg-white/10">Ver aviso de cobro</button>
             </div>
           </div>
-        </Card>
+        </section>
         <Card className="p-6">
           <div className="flex items-start justify-between">
             <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-[#a47f32]">Tu inmueble</p><h2 className="mt-2 text-xl font-semibold">Apartamento B-402</h2></div>
@@ -148,15 +149,16 @@ export default function OwnerPortal() {
         ].map((item) => <button key={item.label} onClick={() => go(item.to)} className="rounded-3xl border border-[#0b1d33]/8 bg-white p-6 text-left shadow-[0_12px_40px_rgba(8,29,51,0.04)] transition hover:-translate-y-0.5 hover:border-[#b08a3c]/40"><item.icon className="text-[#b08a3c]" size={22} /><p className="mt-5 text-sm text-slate-500">{item.label}</p><p className="mt-1 text-3xl font-semibold">{item.value}</p><p className="mt-2 text-xs text-slate-400">{item.detail}</p></button>)}
       </div>
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
-        <Card className="p-6"><div className="flex items-center justify-between"><h2 className="text-lg font-semibold">Avisos importantes</h2><Bell size={19} className="text-[#b08a3c]" /></div><div className="mt-5 space-y-4"><div className="rounded-2xl border border-amber-200 bg-amber-50 p-4"><Pill tone="amber">Cobro pendiente</Pill><p className="mt-3 font-semibold">Cuota de condominio · Julio 2026</p><p className="mt-1 text-sm text-slate-500">Monto: $185,00 · Vence el 31 de julio.</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="font-semibold">Mantenimiento programado del ascensor</p><p className="mt-1 text-sm text-slate-500">Torre B · 22 de julio, 9:00 a. m.</p></div></div></Card>
+        <Card className="p-6"><div className="flex items-center justify-between"><h2 className="text-lg font-semibold">Avisos importantes</h2><Bell size={19} className="text-[#b08a3c]" /></div><div className="mt-5 space-y-4"><button onClick={() => go('finanzas')} className="w-full rounded-2xl border border-amber-200 bg-amber-50 p-4 text-left transition hover:border-amber-400"><Pill tone="amber">Cobro pendiente</Pill><p className="mt-3 font-semibold">Aviso de cobro · Julio 2026</p><p className="mt-1 text-sm text-slate-500">Monto: $185,00 · Vence el 31 de julio.</p><p className="mt-3 text-xs font-bold text-amber-800">Ver desglose completo →</p></button><div className="rounded-2xl bg-slate-50 p-4"><p className="font-semibold">Mantenimiento programado del ascensor</p><p className="mt-1 text-sm text-slate-500">Torre B · 22 de julio, 9:00 a. m.</p></div></div></Card>
         <Card className="p-6"><div className="flex items-center justify-between"><h2 className="text-lg font-semibold">Noticias de la comunidad</h2><Newspaper size={19} className="text-[#b08a3c]" /></div><div className="mt-5 space-y-5"><article><p className="text-xs font-bold uppercase tracking-wider text-[#a47f32]">Comunidad · 18 Jul</p><h3 className="mt-2 font-semibold">Avances del plan de paisajismo de áreas comunes</h3><p className="mt-1 text-sm leading-6 text-slate-500">Conoce las mejoras realizadas durante la primera fase.</p></article><div className="h-px bg-slate-100" /><article><p className="text-xs font-bold uppercase tracking-wider text-[#a47f32]">Administración · 15 Jul</p><h3 className="mt-2 font-semibold">Nuevo horario de atención al propietario</h3></article></div><button onClick={() => go('comunidad')} className="mt-6 text-sm font-bold">Ver todas las noticias →</button></Card>
       </div>
     </>
   );
 
   const renderFinances = () => (
-    <><SectionTitle eyebrow="Finanzas" title="Estado de cuenta" description="Consulta cargos, pagos confirmados y documentos de tu inmueble." action={<button onClick={() => notify('Estado de cuenta preparado para descargar.')} className="rounded-full border border-[#0b1d33]/15 bg-white px-5 py-3 text-sm font-bold"><FileText className="mr-2 inline" size={16} />Descargar PDF</button>} />
-      <div className="grid gap-5 md:grid-cols-3"><Card className="p-6"><p className="text-sm text-slate-500">Saldo pendiente</p><p className="mt-2 text-3xl font-semibold text-amber-700">$185,00</p></Card><Card className="p-6"><p className="text-sm text-slate-500">Último pago</p><p className="mt-2 text-3xl font-semibold">$180,00</p><p className="mt-2 text-xs text-slate-400">16 Jun 2026</p></Card><Card className="p-6"><p className="text-sm text-slate-500">Avisos vencidos</p><p className="mt-2 text-3xl font-semibold">0</p><Pill>Al día</Pill></Card></div>
+    <><SectionTitle eyebrow="Finanzas" title="Estado de cuenta y aviso de cobro" description="Revisa cómo se formó tu cuota, los gastos que la respaldan y cada ajuste aplicado al inmueble." action={<button onClick={() => window.print()} className="rounded-full border border-[#0b1d33]/15 bg-white px-5 py-3 text-sm font-bold"><FileText className="mr-2 inline" size={16} />Imprimir aviso</button>} />
+      <div className="grid gap-5 md:grid-cols-3"><section className="relative overflow-hidden rounded-3xl border border-[#d6af57]/25 p-6 text-white shadow-[0_18px_45px_rgba(8,29,51,.15)]" style={{ backgroundColor: '#0b1d33' }}><div className="absolute -right-8 -top-8 h-28 w-28 rounded-full bg-[#d6af57]/15 blur-2xl" /><p className="relative text-sm text-white/60">Saldo pendiente</p><p className="relative mt-2 text-4xl font-semibold text-[#f0cf77]">$185,00</p><p className="relative mt-3 text-xs text-white/50">Aviso AC-2026-07-B402 · vence 31 Jul</p></section><Card className="p-6"><p className="text-sm text-slate-500">Último pago</p><p className="mt-2 text-3xl font-semibold">$180,00</p><p className="mt-2 text-xs text-slate-400">16 Jun 2026 · conciliado</p></Card><Card className="p-6"><p className="text-sm text-slate-500">Avisos vencidos</p><p className="mt-2 text-3xl font-semibold">0</p><div className="mt-2"><Pill>Sin mora vencida</Pill></div></Card></div>
+      <div className="mt-6"><ChargeNotice /></div>
       <Card className="mt-5 overflow-hidden"><div className="border-b border-slate-100 p-6"><h2 className="font-semibold">Movimientos recientes</h2></div><div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="bg-[#faf9f6] text-xs uppercase tracking-wider text-slate-400"><tr>{['Fecha', 'Descripción', 'Cargo', 'Pago', 'Saldo'].map((h) => <th key={h} className="px-6 py-4 font-bold">{h}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{movements.map((m) => <tr key={`${m.date}-${m.detail}`}><td className="px-6 py-5 text-slate-500">{m.date}</td><td className="px-6 py-5 font-semibold">{m.detail}</td><td className="px-6 py-5">{m.charge}</td><td className="px-6 py-5 text-emerald-700">{m.payment}</td><td className="px-6 py-5 font-bold">{m.balance}</td></tr>)}</tbody></table></div></Card>
       <Card className="mt-5 border-amber-200 bg-amber-50 p-6"><div className="flex gap-4"><AlertTriangle className="shrink-0 text-amber-700" /><div><h2 className="font-semibold text-amber-900">Avisos de cobro vencidos</h2><p className="mt-1 text-sm leading-6 text-amber-800/75">No tienes avisos vencidos. Tu única cuota pendiente corresponde al mes en curso.</p></div></div></Card></>
   );

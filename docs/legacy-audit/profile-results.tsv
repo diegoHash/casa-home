@@ -1,0 +1,94 @@
+metric	value
+tables.actual	120
+rows.information_schema_estimate	315176
+proprietario.total	742
+proprietario.deleted	0
+proprietario.document_missing	526
+proprietario.email_missing	41
+proprietario.phone_missing	18
+proprietario.property_code_missing	0
+proprietario.multi_name_suspected	74
+proprietario.duplicate_property_groups	1
+proprietario.duplicate_document_groups	13
+security.users_with_plaintext_password	12
+security.active_users	9
+audit.rows	29601
+audit.access_time_sentinel_rows	29601
+metric	value
+community.001.properties	731
+community.002.properties	11
+community.001.aliquot_total_general	100.005368
+community.002.aliquot_total_general	0
+community.001.aliquot_total_commercial	0
+community.002.aliquot_total_commercial	0
+community.001.receivables	51755
+community.002.receivables	204
+community.001.receivable_open_balance	2026876.21
+community.002.receivable_open_balance	10139.07
+community.002.receipts	112
+community.001.receipts	19521
+community.002.receipt_amount	21130.93
+community.001.receipt_amount	2745305.68
+community.001.bank_transactions	2599
+community.001.fx_transactions	1870
+community.001.disbursements	7140
+community.002.disbursements	9
+community.001.journal_entries	67
+metric	value
+dates.receivable.min	2020-11-16 00:00:00
+dates.receivable.max	2026-06-08 00:00:00
+dates.receipt.min	2023-01-01 00:00:00
+dates.receipt.max	2026-06-09 00:00:00
+dates.bank_transaction.min	2022-01-01 00:00:00
+dates.bank_transaction.max	2024-05-29 00:00:00
+dates.fx_transaction.min	2024-08-01 00:00:00
+dates.fx_transaction.max	2026-11-02 00:00:00
+dates.disbursement.min	2022-01-01 00:00:00
+dates.disbursement.max	2026-05-31 00:00:00
+dates.journal.min	2024-07-31 00:00:00
+dates.journal.max	2024-12-31 00:00:00
+dates.billing_notice.min	2021-02-16 00:00:00
+dates.billing_notice.max	2026-04-30 00:00:00
+dates.exchange_rate.min	2024-11-01 00:00:00
+dates.exchange_rate.max	2024-12-19 00:00:00
+metric	value
+orphans.property.community	0
+orphans.notice.community	0
+orphans.notice_line.notice	0
+orphans.notice_line.concept	0
+orphans.receivable.property	0
+orphans.receivable.type	0
+orphans.receivable_application.receivable	10
+orphans.receipt.property	0
+orphans.receipt_detail.receipt	32
+orphans.bank_account.bank	0
+orphans.bank_transaction.account	0
+orphans.fx_transaction.account	0
+orphans.disbursement_line.header	0
+orphans.journal_line.header	0
+orphans.journal_line.account	1176
+metric	value
+integrity.receipt_number_ambiguous_groups	0
+integrity.unbalanced_journal_entries_base	0
+integrity.unbalanced_journal_entries_fx	0
+integrity.receipt_header_detail_difference_groups	162
+integrity.current_owner_rows_not_in_old	2
+integrity.old_owner_rows_not_in_current	0
+integrity.current_vendor_rows_not_in_old	296
+integrity.old_vendor_rows_not_in_current	1
+domain_name	domain_value	occurrences
+currencies.bank_account	1	10
+currencies.bank_account	0	4
+currencies.disbursement	1	6867
+currencies.disbursement	0	282
+currencies.fx_transaction	0	1406
+currencies.fx_transaction	1	464
+domains.receipt_type	1	17863
+domains.receipt_type	2	46
+domains.receipt_type	3	1721
+domains.receipt_type	4	2
+domains.receipt_type	5	1
+domains.receivable_direction	D	45611
+domains.receivable_direction	C	6348
+domains.bank_reconciled	1	2599
+domains.soft_delete.property	0	742
