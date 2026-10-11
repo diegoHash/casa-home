@@ -1,6 +1,6 @@
 export type CommunityStatus = 'draft' | 'active' | 'inactive';
 export type AdministrationMode = 'board' | 'internal' | 'external';
-export type PropertyKind = 'apartment' | 'townhouse' | 'commercial';
+export type PropertyKind = 'apartment' | 'townhouse' | 'commercial' | 'house' | 'quinta' | 'penthouse';
 export type PropertyLocationKind = 'building' | 'shopping-center';
 export type MembershipKind = 'owner' | 'resident' | 'representative' | 'staff';
 
@@ -225,6 +225,9 @@ export const propertyKindLabels: Record<PropertyKind, string> = {
   apartment: 'Apartamento',
   townhouse: 'Townhouse',
   commercial: 'Local comercial',
+  house: 'Casa',
+  quinta: 'Quinta',
+  penthouse: 'Penthouse',
 };
 
 export const propertyLocationKindLabels: Record<PropertyLocationKind, string> = {

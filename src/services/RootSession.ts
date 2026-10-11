@@ -1,6 +1,7 @@
 const TOKEN_KEY = 'casa_root_access_token';
 const REFRESH_KEY = 'casa_root_refresh_token';
 const USER_KEY = 'casa_root_user';
+const ACTIVITY_KEY = 'casa_last_activity';
 
 function decodeJwt(token: string): Record<string, unknown> | null {
   try {
@@ -38,12 +39,19 @@ export const RootSession = {
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(REFRESH_KEY);
     sessionStorage.removeItem(USER_KEY);
+    sessionStorage.removeItem(ACTIVITY_KEY);
   },
   token() {
     return sessionStorage.getItem(TOKEN_KEY) || '';
   },
   refreshToken() {
     return sessionStorage.getItem(REFRESH_KEY) || '';
+  },
+  lastActivityAt() {
+    return Number(sessionStorage.getItem(ACTIVITY_KEY)) || Date.now();
+  },
+  touch() {
+    sessionStorage.setItem(ACTIVITY_KEY, String(Date.now()));
   },
   user() {
     try {
@@ -52,10 +60,12 @@ export const RootSession = {
       return null;
     }
   },
-  accessExpired() {
+  accessExpiresAt() {
     const claims = decodeJwt(this.token());
-    const expiration =
-      typeof claims?.exp === 'number' ? claims.exp * 1000 : null;
+    return typeof claims?.exp === 'number' ? claims.exp * 1000 : null;
+  },
+  accessExpired() {
+    const expiration = this.accessExpiresAt();
     return !expiration || expiration <= Date.now();
   },
   isRoot() {

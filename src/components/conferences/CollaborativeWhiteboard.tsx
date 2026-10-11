@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { safeRandomUUID } from '../../utils/uuid';
 import { useRoomContext } from '@livekit/components-react';
 import { Circle, Eraser, Hand, Minus, MousePointer2, Pencil, Redo2, RotateCcw, Square, Trash2, Type, Undo2, X } from 'lucide-react';
 import type { WhiteboardChannel, WhiteboardWireMessage } from '../../hooks/useWhiteboardChannel';
@@ -378,7 +379,7 @@ export function CollaborativeWhiteboard({ channel }: { channel: WhiteboardChanne
     }
     if (tool === 'text') {
       saveHistory();
-      const element = normalizeElement({ id: crypto.randomUUID(), type: 'text', x1: x, y1: y, x2: x + 300, y2: y + 100, text: '', color, strokeWidth, version: 0, author: room.localParticipant.identity });
+      const element = normalizeElement({ id: safeRandomUUID(), type: 'text', x1: x, y1: y, x2: x + 300, y2: y + 100, text: '', color, strokeWidth, version: 0, author: room.localParticipant.identity });
       setElements(current => ({ ...current, [element.id]: element }));
       setSelectedId(element.id);
       setEditingTextId(element.id);
@@ -388,7 +389,7 @@ export function CollaborativeWhiteboard({ channel }: { channel: WhiteboardChanne
     saveHistory();
     event.currentTarget.setPointerCapture(event.pointerId);
     const element: BoardElement = {
-      id: crypto.randomUUID(), type: tool, x1: x, y1: y, x2: x, y2: y,
+      id: safeRandomUUID(), type: tool, x1: x, y1: y, x2: x, y2: y,
       points: tool === 'pencil' ? [[x, y]] : undefined,
       color, strokeWidth, version: currentTimestamp(), author: room.localParticipant.identity,
     };

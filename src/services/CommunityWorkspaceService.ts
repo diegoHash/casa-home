@@ -34,6 +34,8 @@ export interface CoreSnapshot {
     location: { id: string; code: string; name: string; kind: string } | null;
     maximumOccupancy: number | null;
     braceletQuota: number;
+    parkingSpace: string | null;
+    parkingCapacity: number | null;
   }>;
   people: Array<{
     id: string;
@@ -236,6 +238,13 @@ export interface ServiceAuthorizationRecord {
   vehicleModel: string | null;
   vehicleColor: string | null;
   vehiclePlate: string | null;
+  vehicles?: Array<{
+    id: string;
+    brand: string | null;
+    model: string | null;
+    color: string | null;
+    plate: string | null;
+  }>;
   workDescription: string | null;
   exitPurpose: string | null;
   exitItems: string | null;
@@ -309,6 +318,7 @@ export interface TreasurySnapshot {
   bankAccounts: Array<{
     id: string;
     bankName: string;
+    holder: string;
     accountNumber: string;
     accountType: string;
     currency: string;
@@ -322,6 +332,8 @@ export interface TreasurySnapshot {
     currency: string;
     status: string;
     bankAccountId?: string;
+    mobilePhone?: string;
+    mobileDocument?: string;
     instructions?: string;
   }>;
 }
@@ -342,6 +354,8 @@ export interface ExpenseConceptRecord {
   code: string;
   name: string;
   description: string | null;
+  defaultExpenseAccountId: string | null;
+  defaultExpenseAccount?: { id: string; code: string; name: string } | null;
   status: 'ACTIVE' | 'INACTIVE';
   category: {
     id: string;
@@ -365,17 +379,28 @@ export interface BillingSnapshot {
   id: string;
   ownerPayments: Array<{
     id: string;
-    receiptNumber: number;
-    amount: string;
-    currency: 'VES' | 'USD' | 'EUR';
+    receiptNumber: number | null;
+    amount: string | null;
+    currency: 'VES' | 'USD' | 'EUR' | null;
     exchangeRate: string;
-    amountVes: string;
+    originalAmount: string | null;
+    originalCurrency: string | null;
+    functionalAmount: string | null;
+    functionalCurrency: 'USD' | null;
+    exchangeRateSource: string | null;
+    exchangeRateEffectiveAt: string | null;
+    exchangeRateReference: string | null;
+    reportedAt: string | null;
+    reportedById: string | null;
+    reconciledAt: string | null;
+    reconciledById: string | null;
+    amountVes: string | null;
     appliedToNoticeVes: string;
     advanceVes: string;
     reference: string;
     paidAt: string;
     notes: string | null;
-    status: 'POSTED' | 'REVERSED';
+    status: 'REPORTED' | 'RECONCILED' | 'POSTED' | 'REVERSED';
     property: { id: string; code: string; kind: string };
     payerPerson: {
       id: string;
@@ -394,10 +419,10 @@ export interface BillingSnapshot {
     } | null;
     paymentMethod: { id: string; label: string; type: string } | null;
     bankAccount: { id: string; bankName: string; accountNumber: string } | null;
-    receiptAccount: { id: string; code: string; name: string };
-    receivableAccount: { id: string; code: string; name: string };
+    receiptAccount: { id: string; code: string; name: string } | null;
+    receivableAccount: { id: string; code: string; name: string } | null;
     advanceAccount: { id: string; code: string; name: string } | null;
-    journalEntry: { id: string; entryNumber: number | null; status: string };
+    journalEntry: { id: string; entryNumber: number | null; status: string } | null;
   }>;
   expenseCategories: Array<{
     id: string;
@@ -481,6 +506,14 @@ export interface BillingSnapshot {
 
 export interface AccountingSnapshot {
   id: string;
+  name: string;
+  legalName: string;
+  rif: string;
+  address: string;
+  state: string;
+  city: string;
+  postalCode: string;
+  email: string;
   accountingSettings: {
     functionalCurrency: 'VES' | 'USD' | 'EUR';
     nextJournalNumber: number;
@@ -535,6 +568,79 @@ export interface AccountingSnapshot {
   }>;
 }
 
+export interface AccessEventRecord {
+  id: string;
+  direction: 'ENTRY' | 'EXIT';
+  subject: string;
+  documentNumber: string | null;
+  source: string;
+  qrValidated: boolean;
+  occurredAt: string;
+  property: { id: string; code: string } | null;
+}
+
+export interface ReceivablesSnapshot {
+  currency: 'USD';
+  totalIssuedUsd: string;
+  totalPaidUsd: string;
+  totalPendingUsd: string;
+  notices: Array<{
+    id: string;
+    issuedAt: string | null;
+    billingPeriod: { id: string; label: string; periodKey: string };
+    issuedUsd: string;
+    paidUsd: string;
+    pendingUsd: string;
+  }>;
+  propertyBalances: Array<{
+    id: string;
+    property: string;
+    issuedUsd: string;
+    paidUsd: string;
+    pendingUsd: string;
+  }>;
+  currentPeriod: (ReceivablesSnapshot['notices'][number] & { collectionRate: number }) | null;
+}
+
+export interface PayableRecord {
+  id: string;
+  category: 'SECURITY' | 'ELEVATOR_MAINTENANCE' | 'WASTE_COLLECTION' | 'GARDENING' | 'UTILITIES' | 'PAYROLL' | 'PROFESSIONAL_FEES' | 'REPAIRS_MATERIALS' | 'TAXES' | 'SOCIAL_SECURITY' | 'INSURANCE' | 'RENT' | 'TELECOMMUNICATIONS' | 'LEGAL_SERVICES' | 'ACCOUNTING_SERVICES' | 'SUPPLIES' | 'TRANSPORT' | 'OTHER';
+  categoryLabel: string | null;
+  supplierName: string;
+  supplierDocument: string | null;
+  description: string;
+  invoiceNumber: string | null;
+  issueDate: string;
+  dueDate: string;
+  amount: string;
+  amountPaid: string;
+  currency: 'VES' | 'USD' | 'EUR';
+  status: 'PENDING' | 'PARTIALLY_PAID' | 'PAID' | 'VOID';
+  notes: string | null;
+  vendor: VendorRecord | null;
+  expenseAccount?: { id: string; code: string; name: string } | null;
+  liabilityAccount?: { id: string; code: string; name: string } | null;
+  paymentAccount?: { id: string; code: string; name: string } | null;
+  reminders: Array<{ id: string; remindAt: string; message: string | null; status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED' }>;
+}
+
+export interface NotificationRecord {
+  id: string;
+  kind: 'PAYABLE_SUMMARY' | 'PAYABLE_DUE' | 'PAYABLE_REMINDER';
+  severity: 'INFO' | 'WARNING' | 'URGENT';
+  title: string;
+  message: string;
+  createdAt: string;
+  payableId?: string;
+  reminderId?: string;
+}
+
+export interface NotificationsSnapshot {
+  generatedAt: string;
+  unreadCount: number;
+  items: NotificationRecord[];
+}
+
 async function refreshSession() {
   const context = StaffSession.context();
   const refreshToken = StaffSession.refreshToken();
@@ -554,7 +660,7 @@ async function refreshSession() {
 async function get<T>(path: string, retry = true): Promise<T> {
   try {
     const { data } = await casaApi.get<T>(path, {
-      headers: { Authorization: `Bearer ${StaffSession.token()}` },
+      headers: { Authorization: `Bearer ${StaffSession.token()}`, 'X-Casa-Workspace': StaffSession.workspace() },
     });
     return data;
   } catch (error) {
@@ -569,7 +675,7 @@ async function get<T>(path: string, retry = true): Promise<T> {
 }
 
 async function mutate<T>(
-  method: 'POST' | 'PATCH',
+  method: 'POST' | 'PATCH' | 'DELETE',
   path: string,
   data: unknown,
   retry = true,
@@ -579,7 +685,7 @@ async function mutate<T>(
       method,
       url: path,
       data,
-      headers: { Authorization: `Bearer ${StaffSession.token()}` },
+      headers: { Authorization: `Bearer ${StaffSession.token()}`, 'X-Casa-Workspace': StaffSession.workspace() },
     });
     return response.data;
   } catch (error) {
@@ -603,6 +709,10 @@ export const CommunityWorkspaceService = {
     phone?: string;
     email?: string;
   }) => mutate<CoreSnapshot['people'][number]>('POST', '/core/people', input),
+  updatePerson: (id: string, input: { firstName?: string; lastName?: string; phone?: string; email?: string }) =>
+    mutate<CoreSnapshot['people'][number]['person']>('PATCH', `/core/people/${id}`, input),
+  deactivatePerson: (id: string) =>
+    mutate<CoreSnapshot['people'][number]>('DELETE', `/core/people/${id}`, {}),
   createPropertyLocation: (input: {
     kind: 'BUILDING' | 'SHOPPING_CENTER';
     code: string;
@@ -621,6 +731,8 @@ export const CommunityWorkspaceService = {
     aliquotStartsOn?: string;
     maximumOccupancy?: number;
     braceletQuota?: number;
+    parkingSpace?: string;
+    parkingCapacity?: number;
   }) =>
     mutate<CoreSnapshot['properties'][number]>(
       'POST',
@@ -736,6 +848,13 @@ export const CommunityWorkspaceService = {
       `/owner-service/authorizations/${id}/reject`,
       { reason },
     ),
+  securityAccessEvents: () => get<AccessEventRecord[]>('/owner-service/security/access-events'),
+  scanAuthorizationQr: (qrPayload: string, direction: 'ENTRY' | 'EXIT' = 'ENTRY') =>
+    mutate<{ valid: boolean; authorization: ServiceAuthorizationRecord }>('POST', '/owner-service/security/scan', { qrPayload, direction }),
+  confirmAuthorizationArrival: (qrPayload: string, direction: 'ENTRY' | 'EXIT' = 'ENTRY') =>
+    mutate<{ valid: boolean; event: AccessEventRecord; authorization: ServiceAuthorizationRecord }>('POST', '/owner-service/security/scan/confirm', { qrPayload, direction }),
+  registerSecurityAccess: (input: { subject: string; documentNumber?: string; direction: 'ENTRY' | 'EXIT'; notes?: string }) =>
+    mutate<AccessEventRecord>('POST', '/owner-service/security/access-events', input),
   ownerServiceCommunications: (input: {
     page: number;
     pageSize: number;
@@ -815,6 +934,28 @@ export const CommunityWorkspaceService = {
       `/treasury/bank-accounts/${id}`,
       input,
     ),
+  updateProperty: (id: string, input: {
+    kind?: 'APARTMENT' | 'TOWNHOUSE' | 'COMMERCIAL';
+    code?: string;
+    locationId?: string;
+    maximumOccupancy?: number | null;
+    braceletQuota?: number;
+    parkingSpace?: string;
+    parkingCapacity?: number | null;
+  }) =>
+    mutate<CoreSnapshot['properties'][number]>(
+      'PATCH',
+      `/core/properties/${id}`,
+      input,
+    ),
+  deactivateProperty: (id: string) =>
+    mutate<CoreSnapshot['properties'][number]>(
+      'DELETE',
+      `/core/properties/${id}`,
+      {},
+    ),
+  deactivateBankAccount: (id: string) =>
+    mutate<TreasurySnapshot['bankAccounts'][number]>('DELETE', `/treasury/bank-accounts/${id}`, {}),
   updatePaymentMethod: (
     id: string,
     input: {
@@ -832,8 +973,29 @@ export const CommunityWorkspaceService = {
       `/treasury/payment-methods/${id}`,
       input,
     ),
+  deactivatePaymentMethod: (id: string) =>
+    mutate<TreasurySnapshot['paymentMethods'][number]>('DELETE', `/treasury/payment-methods/${id}`, {}),
   billingSnapshot: () => get<BillingSnapshot>('/billing/snapshot'),
   accountingSnapshot: () => get<AccountingSnapshot>('/accounting/snapshot'),
+  receivablesSnapshot: () => get<ReceivablesSnapshot>('/accounting/receivables'),
+  payables: () => get<PayableRecord[]>('/billing/payables'),
+  notifications: () => get<NotificationsSnapshot>('/notifications'),
+  createPayableReminder: (payableId: string, input: { remindAt: string; message?: string }) =>
+    mutate<PayableRecord['reminders'][number]>('POST', `/billing/payables/${payableId}/reminders`, input),
+  cancelPayableReminder: (reminderId: string) =>
+    mutate<PayableRecord['reminders'][number]>('POST', `/billing/payable-reminders/${reminderId}/cancel`, {}),
+  createPayable: (input: {
+    category: PayableRecord['category']; categoryLabel?: string; supplierName: string; supplierDocument?: string; vendorId?: string;
+    description: string; invoiceNumber?: string; issueDate: string; dueDate: string; amount: number;
+    currency: PayableRecord['currency']; notes?: string; expenseAccountId?: string; liabilityAccountId?: string;
+  }) => mutate<PayableRecord>('POST', '/billing/payables', input),
+  updatePayable: (id: string, input: Partial<{
+    category: PayableRecord['category']; categoryLabel: string; supplierName: string; supplierDocument: string; vendorId: string;
+    description: string; invoiceNumber: string; issueDate: string; dueDate: string; amount: number;
+    currency: PayableRecord['currency']; notes: string; status: PayableRecord['status'];
+  }>) => mutate<PayableRecord>('PATCH', `/billing/payables/${id}`, input),
+  payPayable: (id: string, input: { amount: number; paidAt: string; paymentAccountId?: string; paymentReference?: string }) =>
+    mutate<PayableRecord>('POST', `/billing/payables/${id}/pay`, input),
   createLedgerAccount: (input: {
     code: string;
     name: string;
@@ -924,7 +1086,7 @@ export const CommunityWorkspaceService = {
     ),
   createExpenseConcept: (
     categoryId: string,
-    input: { code: string; name: string; description?: string },
+    input: { code: string; name: string; description?: string; defaultExpenseAccountId?: string },
   ) =>
     mutate<ExpenseConceptRecord>(
       'POST',
@@ -1016,7 +1178,7 @@ export const CommunityWorkspaceService = {
       paymentMethodId?: string;
       paymentReference: string;
       paidAt: string;
-      expenseAccountId: string;
+      expenseAccountId?: string;
       paymentAccountId: string;
     },
   ) =>
@@ -1093,5 +1255,11 @@ export const CommunityWorkspaceService = {
       'PATCH',
       `/core/access-users/${accessId}`,
       input,
+    ),
+  revokeAccessUser: (accessId: string, reason: string) =>
+    mutate<CommunityAccessRecord>(
+      'POST',
+      `/core/access-users/${accessId}/revoke`,
+      { reason },
     ),
 };

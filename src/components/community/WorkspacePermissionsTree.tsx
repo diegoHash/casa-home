@@ -15,8 +15,8 @@ import {
 } from 'lucide-react';
 import { workspaceCatalog } from '../../config/workspaceCatalog';
 import {
+  communityFullAccessScope,
   explicitScopeCatalog,
-  scopesForWorkspaceFull,
   type AccessMode,
 } from '../../config/communityAccessCatalog';
 
@@ -84,6 +84,8 @@ export const WorkspacePermissionsTree: React.FC<WorkspacePermissionsTreeProps> =
     setExpandedWorkspaces(allCollapsed);
   };
 
+  const hasCommunityFullAccess = selectedScopes.includes(communityFullAccessScope);
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between px-1">
@@ -109,12 +111,13 @@ export const WorkspacePermissionsTree: React.FC<WorkspacePermissionsTreeProps> =
 
           const workspaceScopes = explicitScopeCatalog.filter(
             s =>
-              (s as any).workspaceCode === wsCode ||
+              s.workspaceCode === wsCode ||
               (wsCode === 'ADMINISTRATION' &&
                 (s.code.startsWith('core.') ||
                   s.code.startsWith('treasury.') ||
                   s.code.startsWith('billing.'))) ||
-              (((wsCode as string) === 'TREASURY' || wsCode === 'ACCOUNTING') && s.code.startsWith('accounting.')) ||
+              (wsCode === 'ACCOUNTING' &&
+                (s.code.startsWith('accounting.') || s.code.startsWith('treasury.'))) ||
               (wsCode === 'OWNER_SERVICE' && s.code.startsWith('owner_service.')) ||
               (wsCode === 'PURCHASES' && s.code.startsWith('purchases.')) ||
               (wsCode === 'COLLECTIONS' && s.code.startsWith('collections.')) ||
@@ -123,22 +126,19 @@ export const WorkspacePermissionsTree: React.FC<WorkspacePermissionsTreeProps> =
               (wsCode === 'BOARD' && s.code.startsWith('board.'))
           );
 
-          const grantedFullScopes = scopesForWorkspaceFull(selectedWorkspaces);
           const checkedScopesCount = workspaceScopes.filter(s => {
+            if (hasCommunityFullAccess) return true;
             if (accessMode === 'COMMUNITY_FULL') return true;
             if (accessMode === 'WORKSPACE_FULL') {
               return (
-                selectedWorkspaces.includes(wsCode) ||
-                grantedFullScopes.some(
-                  g => g.endsWith('.*') && s.code.startsWith(g.slice(0, -1))
-                )
+                selectedWorkspaces.includes(wsCode)
               );
             }
             return selectedScopes.includes(s.code);
           }).length;
 
           const isWorkspaceSelected =
-            accessMode === 'COMMUNITY_FULL' || selectedWorkspaces.includes(wsCode);
+            hasCommunityFullAccess || accessMode === 'COMMUNITY_FULL' || selectedWorkspaces.includes(wsCode);
           const isAllScopesChecked =
             workspaceScopes.length > 0 && checkedScopesCount === workspaceScopes.length;
           const isSomeScopesChecked =
@@ -146,7 +146,7 @@ export const WorkspacePermissionsTree: React.FC<WorkspacePermissionsTreeProps> =
 
           const handleWorkspaceCheckClick = (e: React.MouseEvent) => {
             e.stopPropagation();
-            if (accessMode === 'COMMUNITY_FULL') return;
+            if (hasCommunityFullAccess || accessMode === 'COMMUNITY_FULL') return;
 
             if (accessMode === 'WORKSPACE_FULL') {
               onToggleWorkspace(wsCode);
@@ -207,6 +207,7 @@ export const WorkspacePermissionsTree: React.FC<WorkspacePermissionsTreeProps> =
                     }`}
                   >
                     {isAllScopesChecked ||
+                    hasCommunityFullAccess ||
                     accessMode === 'COMMUNITY_FULL' ||
                     (accessMode === 'WORKSPACE_FULL' && isWorkspaceSelected) ? (
                       <Check size={13} strokeWidth={3} />
@@ -241,7 +242,7 @@ export const WorkspacePermissionsTree: React.FC<WorkspacePermissionsTreeProps> =
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
-                  {accessMode === 'COMMUNITY_FULL' ? (
+                  {hasCommunityFullAccess || accessMode === 'COMMUNITY_FULL' ? (
                     <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700 ring-1 ring-emerald-200">
                       Integral (100%)
                     </span>
@@ -272,6 +273,7 @@ export const WorkspacePermissionsTree: React.FC<WorkspacePermissionsTreeProps> =
                     <div className="grid gap-2 sm:grid-cols-2">
                       {workspaceScopes.map(scope => {
                         const isChecked =
+                          hasCommunityFullAccess ||
                           accessMode === 'COMMUNITY_FULL' ||
                           (accessMode === 'WORKSPACE_FULL' && isWorkspaceSelected) ||
                           selectedScopes.includes(scope.code);
@@ -295,7 +297,7 @@ export const WorkspacePermissionsTree: React.FC<WorkspacePermissionsTreeProps> =
                             <div className="min-w-0 flex-1">
                               <span className="block font-bold text-sm text-[#071a33]">{scope.label}</span>
                               <span className="mt-1 block text-xs font-normal leading-4 text-slate-500">
-                                {(scope as any).description || 'Permiso operativo del espacio.'}
+                                {scope.description || 'Permiso operativo del espacio.'}
                               </span>
                             </div>
                           </label>

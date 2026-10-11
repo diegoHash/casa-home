@@ -7,6 +7,7 @@ import {
   type PropertyLocation,
 } from '../domain/core';
 import type { PlatformClient } from '../domain/superAdmin';
+import { safeRandomUUID } from '../utils/uuid';
 
 const STORAGE_KEY = 'casa_core_v1';
 
@@ -25,7 +26,7 @@ type LegacyProperty = {
 };
 
 function isPropertyKind(value: string): value is PropertyKind {
-  return value === 'apartment' || value === 'townhouse' || value === 'commercial';
+  return value === 'apartment' || value === 'townhouse' || value === 'commercial' || value === 'house' || value === 'quinta' || value === 'penthouse';
 }
 
 function parseState(value: string | null): CoreState {
@@ -143,7 +144,7 @@ function parseState(value: string | null): CoreState {
 }
 
 export function createCoreId(prefix: string) {
-  return `${prefix}_${crypto.randomUUID()}`;
+  return `${prefix}_${safeRandomUUID()}`;
 }
 
 export function auditEntry(

@@ -1,208 +1,123 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Clock, RefreshCw, LogOut, Timer } from 'lucide-react';
+import { Clock, LogOut, RefreshCw, Timer } from 'lucide-react';
 import { CasaAuthService } from '../../services/CasaAuthService';
 import { RootSession } from '../../services/RootSession';
 import { StaffSession } from '../../services/StaffSession';
 
-const IDLE_TIMEOUT_MS = 9 * 60 * 1000; // 9 minutes of inactivity
-const COUNTDOWN_SECONDS = 60; // 60 seconds warning countdown
+type SessionType = 'root' | 'staff';
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+const FINAL_WARNING_SECONDS = 15;
+const ACTIVITY_EVENTS: Array<keyof WindowEventMap> = [
+  'pointerdown', 'keydown', 'input', 'change', 'scroll', 'touchstart',
+];
+
+function activeSession(): SessionType | null {
+  if (RootSession.token() && RootSession.refreshToken()) return 'root';
+  if (StaffSession.token() && StaffSession.refreshToken()) return 'staff';
+  return null;
+}
+
+function lastActivity(type: SessionType) {
+  return type === 'root' ? RootSession.lastActivityAt() : StaffSession.lastActivityAt();
+}
+
+function touch(type: SessionType) {
+  if (type === 'root') RootSession.touch();
+  else StaffSession.touch();
+}
+
+function remainingSeconds(type: SessionType | null) {
+  return type ? Math.max(0, Math.ceil((IDLE_TIMEOUT_MS - (Date.now() - lastActivity(type))) / 1000)) : null;
+}
+
+function formatTime(seconds: number) {
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
 
 export function SessionTimeoutGuard({ children }: { children?: React.ReactNode }) {
   const navigate = useNavigate();
+  const [sessionType, setSessionType] = useState<SessionType | null>(() => activeSession());
+  const [seconds, setSeconds] = useState<number | null>(() => remainingSeconds(activeSession()));
   const [showModal, setShowModal] = useState(false);
-  const [countdown, setCountdown] = useState(COUNTDOWN_SECONDS);
   const [refreshing, setRefreshing] = useState(false);
+  const showModalRef = useRef(false);
 
-  const lastActivityRef = useRef<number>(Date.now());
-  const modalOpenRef = useRef<boolean>(false);
-
-  // Helper to determine if there is an active session
-  const getActiveSessionType = (): 'root' | 'staff' | null => {
-    if (RootSession.token() && RootSession.refreshToken()) return 'root';
-    if (StaffSession.token() && StaffSession.refreshToken()) return 'staff';
-    return null;
-  };
-
-  const handleLogout = useCallback(() => {
+  const handleLogout = useCallback(async () => {
+    const type = activeSession();
+    const refreshToken = type === 'root' ? RootSession.refreshToken() : type === 'staff' ? StaffSession.refreshToken() : '';
     setShowModal(false);
-    modalOpenRef.current = false;
-    const sessionType = getActiveSessionType();
-    RootSession.clear();
-    StaffSession.clear();
-    const loginTarget = sessionType === 'root' ? '/' : '/staff-login';
-    navigate(loginTarget, { replace: true, state: { reason: 'idle-timeout' } });
+    if (type === 'root') RootSession.clear();
+    else if (type === 'staff') StaffSession.clear();
+    try {
+      await CasaAuthService.logout(refreshToken);
+    } finally {
+      navigate(type === 'root' ? '/' : '/staff-login', { replace: true, state: { reason: 'session-expired' } });
+    }
   }, [navigate]);
 
-  // Perform silent token refresh
   const extendSession = useCallback(async () => {
-    const sessionType = getActiveSessionType();
-    if (!sessionType) {
-      setShowModal(false);
-      modalOpenRef.current = false;
-      return;
-    }
-
+    const type = activeSession();
+    if (!type) return handleLogout();
     setRefreshing(true);
     try {
-      if (sessionType === 'root') {
-        const refreshToken = RootSession.refreshToken();
-        const res = await CasaAuthService.refresh(refreshToken);
-        if (res.success) {
-          RootSession.updateTokens(res.data.accessToken, res.data.refreshToken);
-        } else {
-          handleLogout();
-          return;
-        }
-      } else {
-        const refreshToken = StaffSession.refreshToken();
-        const communityId = StaffSession.context()?.communityId;
-        const res = await CasaAuthService.refresh(refreshToken, communityId);
-        if (res.success) {
-          StaffSession.updateTokens(res.data.accessToken, res.data.refreshToken);
-        } else {
-          handleLogout();
-          return;
-        }
-      }
-      // Reset activity and hide modal
-      lastActivityRef.current = Date.now();
+      const result = type === 'root'
+        ? await CasaAuthService.refresh(RootSession.refreshToken())
+        : await CasaAuthService.refresh(StaffSession.refreshToken(), StaffSession.context()?.communityId);
+      if (!result.success) return handleLogout();
+      if (type === 'root') RootSession.updateTokens(result.data.accessToken, result.data.refreshToken);
+      else StaffSession.updateTokens(result.data.accessToken, result.data.refreshToken);
+      touch(type);
+      setSessionType(type);
+      setSeconds(remainingSeconds(type));
+      showModalRef.current = false;
       setShowModal(false);
-      modalOpenRef.current = false;
     } catch {
-      handleLogout();
+      await handleLogout();
     } finally {
       setRefreshing(false);
     }
   }, [handleLogout]);
 
-  // Activity listener
   useEffect(() => {
-    const handleUserActivity = () => {
-      // If modal is not open, update activity timestamp
-      if (!modalOpenRef.current) {
-        lastActivityRef.current = Date.now();
-      }
-    };
-
-    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
-    events.forEach((ev) => window.addEventListener(ev, handleUserActivity, { passive: true }));
-
-    return () => {
-      events.forEach((ev) => window.removeEventListener(ev, handleUserActivity));
-    };
-  }, []);
-
-  // Idle check timer (checks every 2 seconds)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const sessionType = getActiveSessionType();
-      if (!sessionType) {
-        if (modalOpenRef.current) {
-          setShowModal(false);
-          modalOpenRef.current = false;
-        }
-        return;
-      }
-
-      const elapsed = Date.now() - lastActivityRef.current;
-      if (!modalOpenRef.current && elapsed >= IDLE_TIMEOUT_MS) {
+    const update = () => {
+      const type = activeSession();
+      const remaining = remainingSeconds(type);
+      setSessionType(type);
+      setSeconds(remaining);
+      if (!type) {
+        showModalRef.current = false;
+        setShowModal(false);
+      } else if (remaining !== null && remaining <= FINAL_WARNING_SECONDS) {
+        showModalRef.current = true;
         setShowModal(true);
-        modalOpenRef.current = true;
-        setCountdown(COUNTDOWN_SECONDS);
       }
-    }, 2000);
-
-    return () => clearInterval(interval);
+    };
+    const onActivity = () => {
+      if (showModalRef.current) return;
+      const type = activeSession();
+      if (type) {
+        touch(type);
+        setSeconds(Math.ceil(IDLE_TIMEOUT_MS / 1000));
+      }
+    };
+    update();
+    const timer = window.setInterval(update, 1000);
+    ACTIVITY_EVENTS.forEach((event) => window.addEventListener(event, onActivity, { passive: true }));
+    return () => {
+      window.clearInterval(timer);
+      ACTIVITY_EVENTS.forEach((event) => window.removeEventListener(event, onActivity));
+    };
   }, []);
 
-  // Countdown timer when modal is visible
   useEffect(() => {
-    if (!showModal) return;
+    if (!showModal || refreshing || seconds === null || seconds > 0) return;
+    void handleLogout();
+  }, [showModal, refreshing, seconds, handleLogout]);
 
-    if (countdown <= 0) {
-      handleLogout();
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setCountdown((prev) => prev - 1);
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [showModal, countdown, handleLogout]);
-
-  return (
-    <>
-      {children}
-
-      {showModal && (
-        <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#071a33]/65 p-4 backdrop-blur-md animate-fade-in"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="session-timeout-title"
-        >
-          <div className="w-full max-w-md overflow-hidden rounded-[2rem] border border-[#b08a3c]/30 bg-white p-7 shadow-[0_24px_70px_rgba(7,26,51,0.25)] sm:p-8">
-            <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-[#b08a3c]/30 bg-[#f8f3e8] text-[#9a742b]">
-                <Clock size={24} />
-              </div>
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#9a742b]">
-                  Seguridad y Privacidad
-                </p>
-                <h3 id="session-timeout-title" className="text-xl font-bold text-[#071a33]">
-                  Inactividad detectada
-                </h3>
-              </div>
-            </div>
-
-            <div className="mt-5 rounded-2xl border border-[#b08a3c]/20 bg-[#f8f3e8]/70 p-4">
-              <div className="flex items-center justify-between text-xs font-bold text-[#7b5c20]">
-                <span className="flex items-center gap-1.5">
-                  <Timer size={16} className="text-[#9a742b]" />
-                  Cierre automático en:
-                </span>
-                <span className="rounded-full bg-[#071a33] px-3 py-1 text-sm tabular-nums font-extrabold text-[#e4c26f]">
-                  00:{String(countdown).padStart(2, '0')}
-                </span>
-              </div>
-              <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-[#e4c26f]/30">
-                <div
-                  className="h-full bg-gradient-to-r from-[#9a742b] to-[#e4c26f] transition-all duration-1000 ease-linear"
-                  style={{ width: `${(countdown / COUNTDOWN_SECONDS) * 100}%` }}
-                />
-              </div>
-            </div>
-
-            <p className="mt-4 text-sm leading-6 text-slate-600">
-              Hemos detectado 9 minutos sin actividad. Por razones de seguridad, tu sesión finalizará si no confirmas tu presencia. Los datos no guardados podrían perderse.
-            </p>
-
-            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-              <button
-                type="button"
-                onClick={extendSession}
-                disabled={refreshing}
-                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white shadow-lg transition hover:bg-[#12335a] focus:ring-2 focus:ring-[#b08a3c] disabled:opacity-60"
-              >
-                <RefreshCw size={17} className={refreshing ? 'animate-spin' : ''} />
-                {refreshing ? 'Renovando...' : 'Mantener sesión activa'}
-              </button>
-
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-5 py-3.5 text-sm font-bold text-slate-600 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700"
-              >
-                <LogOut size={17} />
-                Salir
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
+  return <>
+    {children}
+    {sessionType && seconds !== null && !showModal && <div className="fixed bottom-4 right-4 z-[90] flex items-center gap-2 rounded-full border border-[#b08a3c]/30 bg-white px-3.5 py-2 text-xs font-bold text-[#071a33] shadow-lg" aria-live="polite"><Timer size={15} className="text-[#9a742b]" />Sesión: <span className="tabular-nums">{formatTime(seconds)}</span></div>}
+    {showModal && <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#071a33]/65 p-4 backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="session-expired-title"><div className="w-full max-w-md rounded-[2rem] border border-[#b08a3c]/30 bg-white p-7 shadow-[0_24px_70px_rgba(7,26,51,0.25)] sm:p-8"><div className="flex items-center gap-3"><div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[#b08a3c]/30 bg-[#f8f3e8] text-[#9a742b]"><Clock size={24} /></div><div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#9a742b]">Seguridad y privacidad</p><h3 id="session-expired-title" className="text-xl font-bold text-[#071a33]">Tu sesión está por vencer</h3></div></div><p className="mt-5 text-sm leading-6 text-slate-600">No detectamos actividad. Se cerrará tu sesión en <strong>{seconds ?? FINAL_WARNING_SECONDS} segundos</strong>. ¿Deseas permanecer activo?</p><div className="mt-7 flex flex-col gap-3 sm:flex-row"><button type="button" onClick={extendSession} disabled={refreshing} className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white disabled:opacity-60"><RefreshCw size={17} className={refreshing ? 'animate-spin' : ''} />{refreshing ? 'Renovando...' : 'Permanecer activo'}</button><button type="button" onClick={() => void handleLogout()} className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-5 py-3.5 text-sm font-bold text-slate-600"><LogOut size={17} />Cerrar sesión</button></div></div></div>}
+  </>;
 }

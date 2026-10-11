@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from 'react';
+import { safeRandomUUID } from '../../utils/uuid';
 import {
   ArrowRight,
   ArrowLeftRight,
@@ -37,10 +38,13 @@ import { auditEntry, CoreRepository, createCoreId } from '../../services/CoreRep
 import { RootSession } from '../../services/RootSession';
 import { casaApi, CasaAuthService } from '../../services/CasaAuthService';
 import { CasaPlatformService } from '../../services/CasaPlatformService';
+import type { CommunityAccessRecord } from '../../services/CasaPlatformService';
 import { CommunityWorkspaceService } from '../../services/CommunityWorkspaceService';
+import { roleCatalog, roleLabel, scopeCatalog, scopesForWorkspaceFull } from '../../config/communityAccessCatalog';
+import { workspaceCatalog, workspaceLabel } from '../../config/workspaceCatalog';
 
 export type CoreSection = 'summary' | 'properties' | 'people' | 'ownership' | 'staff' | 'concessions' | 'board' | 'banking' | 'validation' | 'history' | 'settings' | 'audit';
-type DialogKind = 'community' | 'location' | 'property' | 'person' | 'edit-person' | 'ownership' | 'employment' | 'concession' | 'edit-concession' | 'view-concession' | 'board' | 'bank' | 'edit-bank' | 'payment-method' | 'edit-payment-method' | null;
+type DialogKind = 'community' | 'location' | 'property' | 'person' | 'edit-person' | 'ownership' | 'employment' | 'employment-access' | 'concession' | 'edit-concession' | 'view-concession' | 'board' | 'bank' | 'edit-bank' | 'payment-method' | 'edit-payment-method' | null;
 
 type LifecycleKind = 'ownership' | 'employment' | 'board' | 'concession';
 type LifecycleTarget = { kind: LifecycleKind; id: string; label: string } | null;
@@ -67,6 +71,20 @@ const inputClass = 'mt-2 w-full rounded-xl border border-slate-200 bg-[#fbfaf7] 
 const emptyCommunity = {
   name: '', legalName: '', rif: '', phone: '', email: '', address: '', state: '', city: '', postalCode: '',
   administrationMode: 'board' as AdministrationMode, administratorName: '', administratorRif: '',
+};
+
+const digitsOnly = (value: string) => value.replace(/\D/g, '');
+const emailCharactersOnly = (value: string) => value.replace(/[^A-Za-z0-9@._]/g, '');
+const aliquotCharactersOnly = (value: string) => {
+  let separator = '';
+  return Array.from(value).filter(character => {
+    if (/\d/.test(character)) return true;
+    if ((character === '.' || character === ',') && !separator) {
+      separator = character;
+      return true;
+    }
+    return false;
+  }).join('');
 };
 
 function Field({ label, children, span = false, hint }: { label: ReactNode; children: ReactNode; span?: boolean; hint?: string }) {
@@ -116,10 +134,13 @@ const auditActionLabels: Record<string, string> = {
   APP_USER_EMAIL_SYNCHRONIZED: 'Sincronizó el correo de acceso',
   PROPERTY_LOCATION_CREATED: 'Registró una ubicación',
   PROPERTY_CREATED: 'Registró un inmueble',
+  PROPERTY_UPDATED: 'Actualizó un inmueble',
+  PROPERTY_DEACTIVATED: 'Desactivó un inmueble',
   PROPERTY_CAPACITY_UPDATED: 'Actualizó capacidad y cupos',
   PROPERTY_ALIQUOT_CHANGED: 'Cambió una alícuota',
   INITIAL_BOARD_CONFIGURED: 'Configuró la junta inicial',
   OWNERSHIP_CREATED: 'Vinculó un propietario',
+  OWNERSHIP_TRANSFERRED: 'Transfirió la titularidad',
   EMPLOYMENT_CREATED: 'Registró una relación laboral',
   EMPLOYMENT_ENDED: 'Finalizó una relación laboral',
   EMPLOYMENT_ACCESS_RECONCILED: 'Ajustó el acceso de un extrabajador',
@@ -280,7 +301,7 @@ function normalizeAdministrationMode(value: unknown): AdministrationMode {
   return 'external';
 }
 
-export default function CoreModule({ initialSection = 'summary', clientId = null, canWriteTreasury = false }: { initialSection?: CoreSection; clientId?: string | null; canWriteTreasury?: boolean }) {
+export default function CoreModule({ initialSection = 'summary', clientId = null, canWriteTreasury = false, onManageAccess }: { initialSection?: CoreSection; clientId?: string | null; canWriteTreasury?: boolean; onManageAccess?: (clientId: string, accessId?: string) => void }) {
   const demoMode = import.meta.env.DEV && new URLSearchParams(window.location.search).get('demo') === '1';
   const [data, setData] = useState<CoreState>(() => CoreRepository.load());
   const [selectedCommunityId, setSelectedCommunityId] = useState(() => {
@@ -299,6 +320,10 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
   const [selectedConcessionId, setSelectedConcessionId] = useState<string | null>(null);
   const [selectedBankAccountId, setSelectedBankAccountId] = useState<string | null>(null);
   const [selectedPaymentMethodId, setSelectedPaymentMethodId] = useState<string | null>(null);
+  const [selectedEmploymentId, setSelectedEmploymentId] = useState<string | null>(null);
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState<'all' | 'mobile-payment' | 'bank-transfer' | 'cash'>('all');
+  const [peopleSearch, setPeopleSearch] = useState('');
+  const [communityAccesses, setCommunityAccesses] = useState<CommunityAccessRecord[]>([]);
   const [accountingAccounts, setAccountingAccounts] = useState<Array<{ id: string; bankAccountId?: string | null; code: string; name: string }>>([]);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(!demoMode);
@@ -652,6 +677,35 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
   const concessions = data.concessions.filter(item => item.communityId === selectedCommunityId && item.status === 'active');
   const audit = data.audit.filter(item => item.communityId === selectedCommunityId);
   const people = useMemo(() => data.people.filter(person => communityPeople.some(item => item.personId === person.id) || memberships.some(item => item.personId === person.id) || board.some(item => item.personId === person.id) || ownerships.some(item => item.personId === person.id)), [data.people, communityPeople, memberships, board, ownerships]);
+  const filteredPeople = useMemo(() => {
+    const term = peopleSearch.trim().toLowerCase();
+    if (!term) return people;
+    return people.filter((person) => {
+      const ownedPropertyCodes = ownerships
+        .filter((ownership) => ownership.personId === person.id)
+        .map((ownership) => propertyName(ownership.propertyId))
+        .join(' ');
+      return `${person.firstName} ${person.lastName} ${person.documentType}-${person.documentNumber} ${person.documentNumber} ${ownedPropertyCodes}`
+        .toLowerCase()
+        .includes(term);
+    });
+  }, [people, peopleSearch, ownerships]);
+
+  useEffect(() => {
+    if (demoMode || !community?.clientId) {
+      setCommunityAccesses([]);
+      return;
+    }
+    let active = true;
+    void CasaPlatformService.listCommunityAccess(community.clientId)
+      .then((accesses) => {
+        if (active) setCommunityAccesses(accesses);
+      })
+      .catch(() => {
+        if (active) setCommunityAccesses([]);
+      });
+    return () => { active = false; };
+  }, [community?.clientId, demoMode, reloadVersion]);
   const ownershipCoverageComplete = properties.length > 0 && properties.every(property => {
     const assigned = ownerships.filter(item => item.propertyId === property.id).reduce((sum, item) => sum + item.ownershipPercentage, 0);
     return Math.abs(assigned - 100) < 0.001;
@@ -955,8 +1009,12 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
     }
     const kind = String(form.get('kind')) as PropertyKind;
     const locationId = String(form.get('locationId') || '') || null;
-    const aliquotStr = form.get('aliquot') ? String(form.get('aliquot')) : undefined;
-    const aliquot = aliquotStr ? Number(aliquotStr) : undefined;
+    const aliquotStr = form.get('aliquot') ? aliquotCharactersOnly(String(form.get('aliquot'))) : undefined;
+    const aliquot = aliquotStr ? Number(aliquotStr.replace(',', '.')) : undefined;
+    if (aliquot !== undefined && (!Number.isFinite(aliquot) || aliquot < 0 || aliquot > 100)) {
+      setNotice('La alícuota debe ser un número entre 0 y 100.');
+      return;
+    }
     const maximumOccupancy = Number(form.get('maximumOccupancy')) || undefined;
     const braceletQuota = Number(form.get('braceletQuota')) || 0;
 
@@ -1014,20 +1072,36 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
     if (!community) return;
     const form = new FormData(event.currentTarget);
     const documentType = String(form.get('documentType')) as 'V' | 'E' | 'J' | 'P';
-    const documentNumber = String(form.get('documentNumber')).trim();
+    const documentNumber = digitsOnly(String(form.get('documentNumber')));
     const existing = data.people.find(item => item.documentType === documentType && item.documentNumber === documentNumber);
     const firstName = String(form.get('firstName')).trim().toLocaleUpperCase('es-VE');
     const lastName = String(form.get('lastName')).trim().toLocaleUpperCase('es-VE');
     const phone = String(form.get('phone')).trim();
-    const email = String(form.get('email')).trim().toLowerCase();
+    const email = emailCharactersOnly(String(form.get('email'))).toLowerCase();
+    const propertyId = String(form.get('propertyId') || '');
+    const ownershipPercentage = Number(form.get('ownershipPercentage')) || 100;
+    const startsOn = String(form.get('startsOn') || new Date().toISOString().slice(0, 10));
+    const property = properties.find(item => item.id === propertyId);
+    const assignedPercentage = propertyId ? ownerships.filter(item => item.propertyId === propertyId).reduce((sum, item) => sum + item.ownershipPercentage, 0) : 0;
+    if (propertyId && !property) {
+      setNotice('Selecciona un inmueble válido para crear el vínculo.');
+      return;
+    }
+    if (propertyId && assignedPercentage + ownershipPercentage > 100) {
+      setNotice(`La participación excede el 100%. Disponible: ${Math.max(0, 100 - assignedPercentage)}%.`);
+      return;
+    }
 
     const doSave = async () => {
       try {
         let personId = existing?.id ?? createCoreId('person');
+        let ownershipId = createCoreId('ownership');
+        let accessToken = '';
         if (!demoMode && !existing) {
           const rootToken = RootSession.token();
           const selectRes = await CasaAuthService.selectContext(rootToken, community.id);
           if (!selectRes.success) throw new Error(selectRes.error);
+          accessToken = selectRes.data.accessToken;
           
           const res = await casaApi.post<any>('/core/people', {
             firstName,
@@ -1037,9 +1111,18 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
             phone: phone || undefined,
             email: email || undefined,
           }, {
-            headers: { Authorization: `Bearer ${selectRes.data.accessToken}` }
+            headers: { Authorization: `Bearer ${accessToken}` }
           });
           personId = res.data.person.id;
+        }
+        if (!demoMode && propertyId) {
+          if (!accessToken) {
+            const selectRes = await CasaAuthService.selectContext(RootSession.token(), community.id);
+            if (!selectRes.success) throw new Error(selectRes.error);
+            accessToken = selectRes.data.accessToken;
+          }
+          const res = await casaApi.post<any>('/core/ownerships', { personId, propertyId, ownershipPercentage, startsOn }, { headers: { Authorization: `Bearer ${accessToken}` } });
+          ownershipId = res.data.id;
         }
 
 
@@ -1052,7 +1135,8 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
             id: createCoreId('community_person'), communityId: community.id, personId,
             status: 'active' as const, registeredAt: new Date().toISOString(),
           }],
-          audit: [auditEntry(community.id, 'Registró', 'Persona', `${firstName} ${lastName}`), ...current.audit],
+          ownerships: propertyId ? [...current.ownerships, { id: ownershipId, communityId: community.id, personId, propertyId, ownershipPercentage, startsOn, endsOn: null, status: 'active' as const }] : current.ownerships,
+          audit: [auditEntry(community.id, propertyId ? 'Registró y vinculó' : 'Registró', propertyId ? 'Persona e inmueble' : 'Persona', propertyId ? `${firstName} ${lastName} · ${property!.code}` : `${firstName} ${lastName}`), ...current.audit],
         }));
         setDialog(null);
       } catch (err: any) {
@@ -1196,6 +1280,10 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
     const form = new FormData(event.currentTarget);
     const personId = String(form.get('personId'));
     const propertyId = String(form.get('propertyId'));
+    if (!personId || !propertyId) {
+      setNotice('Selecciona una persona y un inmueble para crear el vínculo.');
+      return;
+    }
     const ownershipPercentage = Number(form.get('ownershipPercentage')) || 100;
     const existing = ownerships.find(item => item.personId === personId && item.propertyId === propertyId);
     if (existing) {
@@ -1253,6 +1341,10 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
     if (!community) return;
     const form = new FormData(event.currentTarget);
     const personId = String(form.get('personId'));
+    if (!personId) {
+      setNotice('Selecciona una persona para crear la relación laboral.');
+      return;
+    }
     if (board.some(item => item.personId === personId && item.status === 'active')) {
       setNotice('No puede registrarse como trabajador porque integra la junta vigente.');
       return;
@@ -1304,6 +1396,26 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
     };
 
     void doSave();
+  };
+
+  const createEmploymentAccess = async (input: { personId: string; roleCode: string; workspaceCodes: string[]; scopes: string[]; pin: string }) => {
+    if (!community) return;
+    try {
+      if (!demoMode) {
+        if (!community.clientId) throw new Error('La comunidad no está asociada a un cliente de CASA.');
+        await CasaPlatformService.createCommunityAccess(community.clientId, {
+          personId: input.personId,
+          roleCode: input.roleCode,
+          workspaceCodes: input.workspaceCodes,
+          scopes: input.scopes,
+          temporaryPassword: input.pin,
+        });
+      }
+      setNotice('Acceso creado. Entrega el PIN temporal al trabajador por un canal seguro.');
+    } catch (err: any) {
+      setNotice(err.response?.data?.message || err.message || 'No fue posible crear el acceso del trabajador.');
+      throw err;
+    }
   };
 
   const saveConcession = (event: FormEvent<HTMLFormElement>) => {
@@ -1401,6 +1513,10 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
     if (!community) return;
     const form = new FormData(event.currentTarget);
     const personId = String(form.get('personId'));
+    if (!personId) {
+      setNotice('Selecciona una persona para designarla en la junta.');
+      return;
+    }
     if (employments.some(item => item.personId === personId && item.status === 'active')) {
       setNotice('No puede integrar la junta porque tiene una relación laboral vigente.');
       return;
@@ -1779,29 +1895,50 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
       setNotice('Selecciona una persona distinta al propietario actual.');
       return;
     }
-    const replacement = {
-      ...source,
-      id: createCoreId('ownership'),
-      personId,
-      startsOn: transferDate,
-      endsOn: null,
-      endReason: undefined,
-      status: 'active' as const,
+    const persistTransfer = async () => {
+      try {
+        let replacementId = createCoreId('ownership');
+        if (!demoMode) {
+          const rootToken = RootSession.token();
+          const selectRes = await CasaAuthService.selectContext(rootToken, community.id);
+          if (!selectRes.success) throw new Error(selectRes.error);
+          const response = await casaApi.post<any>(`/core/ownerships/${source.id}/transfer`, {
+            personId,
+            transferDate,
+            reason,
+          }, {
+            headers: { Authorization: `Bearer ${selectRes.data.accessToken}` },
+          });
+          replacementId = response.data.ownership?.id ?? response.data.id ?? replacementId;
+        }
+        const replacement = {
+          ...source,
+          id: replacementId,
+          personId,
+          startsOn: transferDate,
+          endsOn: null,
+          endReason: undefined,
+          status: 'active' as const,
+        };
+        commit(current => ({
+          ...current,
+          ownerships: [
+            ...current.ownerships.map(item => item.id === source.id ? { ...item, status: 'ended' as const, endsOn: transferDate, endReason: reason } : item),
+            replacement,
+          ],
+          audit: [auditEntry(community.id, 'Transfirió', 'Propiedad', propertyName(source.propertyId), {
+            reason,
+            before: { personId: source.personId, ownershipPercentage: source.ownershipPercentage, startsOn: source.startsOn },
+            after: { personId, ownershipPercentage: replacement.ownershipPercentage, startsOn: transferDate },
+          }), ...current.audit],
+        }));
+        setTransferOwnershipId(null);
+        setNotice('Transferencia registrada sin perder la titularidad anterior.');
+      } catch (error: any) {
+        setNotice(error.response?.data?.message || error.message || 'No fue posible registrar la transferencia.');
+      }
     };
-    commit(current => ({
-      ...current,
-      ownerships: [
-        ...current.ownerships.map(item => item.id === source.id ? { ...item, status: 'ended' as const, endsOn: transferDate, endReason: reason } : item),
-        replacement,
-      ],
-      audit: [auditEntry(community.id, 'Transfirió', 'Propiedad', propertyName(source.propertyId), {
-        reason,
-        before: { personId: source.personId, ownershipPercentage: source.ownershipPercentage, startsOn: source.startsOn },
-        after: { personId, ownershipPercentage: replacement.ownershipPercentage, startsOn: transferDate },
-      }), ...current.audit],
-    }));
-    setTransferOwnershipId(null);
-    setNotice('Transferencia registrada sin perder la titularidad anterior.');
+    void persistTransfer();
   };
 
   const activateCommunity = () => {
@@ -1987,12 +2124,12 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
 
       {section === 'properties' && <ListSection icon={<Building2 size={20} />} eyebrow="Inventario inmobiliario" title={`${properties.length} inmuebles · ${locations.length} ubicaciones`} action="Registrar inmueble" onAction={() => setDialog('property')} secondaryAction="Agregar ubicación" onSecondaryAction={() => setDialog('location')}><CoreFlow active="properties" onNavigate={setSection} /><div className="mt-6">{locations.length > 0 && <div className="mb-5 flex flex-wrap gap-2">{locations.map(item => <span key={item.id} className="inline-flex items-center gap-2 rounded-full bg-[#f1eadb] px-3 py-2 text-xs font-semibold text-[#7b5c20]"><MapPinned size={14} />{item.name} · {propertyLocationKindLabels[item.kind]}</span>)}</div>}{properties.length ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{properties.map(item => <article key={item.id} className="rounded-2xl border border-slate-200 p-4"><div className="flex items-start justify-between gap-3"><p className="text-lg font-semibold">{item.code}</p><Badge>{propertyKindLabels[item.kind]}</Badge></div><p className="mt-4 text-xs text-slate-400">{locationName(item.locationId)}</p><p className="mt-2 text-xs font-semibold text-slate-500">Alícuota: {item.aliquot ?? 'No definida'}{item.aliquot !== null ? '%' : ''}</p><div className="mt-3 grid grid-cols-2 gap-2 text-xs"><div className="rounded-xl bg-slate-50 p-2"><span className="block text-slate-400">Capacidad máxima</span><strong>{item.maximumOccupancy ?? 'Pendiente'}</strong></div><div className="rounded-xl bg-slate-50 p-2"><span className="block text-slate-400">Cupos brazaletes</span><strong>{item.braceletQuota}</strong></div></div><div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => setAliquotPropertyId(item.id)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Modificar alícuota</button><button type="button" onClick={() => setCapacityPropertyId(item.id)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Capacidad y cupos</button></div></article>)}</div> : <div className="rounded-2xl border border-dashed border-slate-300 px-6 py-10 text-center"><p className="font-semibold">Aún no hay inmuebles</p><p className="mt-2 text-sm text-slate-500">Registra apartamentos, townhouses o locales comerciales. La ubicación es opcional.</p></div>}</div></ListSection>}
 
-      {section === 'people' && <ListSection icon={<CircleUserRound size={20} />} eyebrow="Directorio único" title={`${people.length} personas registradas`} action="Registrar persona" onAction={() => setDialog('person')}><CoreFlow active="people" onNavigate={setSection} />{people.length ? <div className="mt-6 overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-400"><tr><th className="pb-3">Persona</th><th className="pb-3">Propiedades</th><th className="pb-3">Otras relaciones</th><th className="pb-3">Contacto</th><th className="pb-3 text-right">Acciones</th></tr></thead><tbody>{people.map(person => { const owned = ownerships.filter(item => item.personId === person.id); const relations = memberships.filter(item => item.personId === person.id && item.kind !== 'owner'); const employment = employments.find(item => item.personId === person.id); const boardRole = board.find(item => item.personId === person.id && item.status === 'active'); return <tr key={person.id} className="border-b border-slate-100"><td className="py-4 font-semibold">{personName(person.id)}<span className="mt-1 block text-xs font-normal text-slate-400">{person.documentType}-{person.documentNumber}</span></td><td className="py-4 text-slate-500">{owned.map(item => propertyName(item.propertyId)).join(', ') || 'Sin vincular'}</td><td className="py-4"><div className="flex flex-wrap gap-1">{employment && <Badge tone="gold">Personal · {employment.position}</Badge>}{boardRole && <Badge tone="green">Junta · {boardRole.position}</Badge>}{relations.map(item => <Badge key={item.id} tone="gold">{membershipKindLabels[item.kind]}</Badge>)}{!employment && !boardRole && !relations.length && <span className="text-slate-400">—</span>}</div></td><td className="py-4 text-slate-500">{person.phone || person.email || '—'}{person.contacts.length > 0 && <span className="mt-1 block text-xs text-[#9a742b]">+{person.contacts.length} secundario(s)</span>}</td><td className="py-4 text-right"><button type="button" onClick={() => { setSelectedPersonId(person.id); setDialog('edit-person'); }} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50">Editar</button></td></tr>; })}</tbody></table></div> : <div className="mt-6 rounded-2xl border border-dashed border-slate-300 px-6 py-10 text-center"><p className="font-semibold">Directorio sin personas</p><p className="mt-2 text-sm text-slate-500">Registra la identidad primero. Luego podrás cruzarla con uno o varios inmuebles.</p></div>}</ListSection>}
+      {section === 'people' && <ListSection icon={<CircleUserRound size={20} />} eyebrow="Directorio único" title={`${people.length} personas registradas`} action="Registrar persona" onAction={() => setDialog('person')}><CoreFlow active="people" onNavigate={setSection} /><div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center"><div className="relative flex-1 sm:max-w-md"><CircleUserRound className="absolute left-3.5 top-3 text-slate-400" size={17} /><input value={peopleSearch} onChange={event => setPeopleSearch(event.target.value)} placeholder="Buscar por nombre, cédula o propiedad" className="w-full rounded-xl border border-slate-200 bg-[#fbfaf7] py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#b08a3c]" /></div>{peopleSearch && <button type="button" onClick={() => setPeopleSearch('')} className="text-xs font-bold text-[#9a742b]">Limpiar búsqueda</button>}</div>{people.length && filteredPeople.length ? <div className="mt-6 overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-400"><tr><th className="pb-3">Persona</th><th className="pb-3">Propiedades</th><th className="pb-3">Otras relaciones</th><th className="pb-3">Contacto</th><th className="pb-3 text-right">Acciones</th></tr></thead><tbody>{filteredPeople.map(person => { const owned = ownerships.filter(item => item.personId === person.id); const relations = memberships.filter(item => item.personId === person.id && item.kind !== 'owner'); const employment = employments.find(item => item.personId === person.id); const boardRole = board.find(item => item.personId === person.id && item.status === 'active'); return <tr key={person.id} className="border-b border-slate-100"><td className="py-4 font-semibold">{personName(person.id)}<span className="mt-1 block text-xs font-normal text-slate-400">{person.documentType}-{person.documentNumber}</span></td><td className="py-4 text-slate-500">{owned.map(item => propertyName(item.propertyId)).join(', ') || 'Sin vincular'}</td><td className="py-4"><div className="flex flex-wrap gap-1">{employment && <Badge tone="gold">Personal · {employment.position}</Badge>}{boardRole && <Badge tone="green">Junta · {boardRole.position}</Badge>}{relations.map(item => <Badge key={item.id} tone="gold">{membershipKindLabels[item.kind]}</Badge>)}{!employment && !boardRole && !relations.length && <span className="text-slate-400">—</span>}</div></td><td className="py-4 text-slate-500">{person.phone || person.email || '—'}{person.contacts.length > 0 && <span className="mt-1 block text-xs text-[#9a742b]">+{person.contacts.length} secundario(s)</span>}</td><td className="py-4 text-right"><button type="button" onClick={() => { setSelectedPersonId(person.id); setDialog('edit-person'); }} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50">Editar</button></td></tr>; })}</tbody></table></div> : people.length ? <div className="mt-6 rounded-2xl border border-dashed border-slate-300 px-6 py-10 text-center"><p className="font-semibold">Sin coincidencias</p><p className="mt-2 text-sm text-slate-500">Prueba con otro nombre, número de documento o código de inmueble.</p></div> : <div className="mt-6 rounded-2xl border border-dashed border-slate-300 px-6 py-10 text-center"><p className="font-semibold">Directorio sin personas</p><p className="mt-2 text-sm text-slate-500">Registra la identidad primero. Luego podrás cruzarla con uno o varios inmuebles.</p></div>}</ListSection>}
 
 
       {section === 'ownership' && <ListSection icon={<Link2 size={20} />} eyebrow="Relación histórica" title={`${ownerships.length} vínculos de propiedad vigentes`} action="Vincular propietario" onAction={() => setDialog('ownership')}><CoreFlow active="ownership" onNavigate={setSection} />{ownerships.length ? <div className="mt-6 grid gap-3 md:grid-cols-2">{ownerships.map(item => <article key={item.id} className="rounded-2xl border border-slate-200 p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold">{personName(item.personId)}</p><p className="mt-1 text-sm text-[#9a742b]">{propertyName(item.propertyId)}</p></div><Badge tone="green">{item.ownershipPercentage}%</Badge></div><p className="mt-4 text-xs text-slate-400">Vigente desde {formatDateTime(item.startsOn)}</p><div className="mt-4 flex gap-3"><div className="group relative"><button type="button" onClick={() => setTransferOwnershipId(item.id)} className="rounded-xl bg-[#071a33] px-3.5 py-2 text-xs font-bold text-white transition hover:bg-[#b08a3c]">Transferir</button><div className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2.5 hidden w-72 -translate-x-1/2 rounded-xl bg-[#071a33] p-3 text-xs font-normal leading-relaxed text-white shadow-2xl transition-all group-hover:block"><span className="block font-bold text-[#e4c26f] mb-1">Traspaso de Propiedad</span>Finaliza la relación de propiedad actual y abre una nueva vinculación para el nuevo adquirente, manteniendo el historial del inmueble.<div className="absolute top-full left-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 bg-[#071a33]"></div></div></div><div className="group relative"><button type="button" onClick={() => setLifecycleTarget({ kind: 'ownership', id: item.id, label: `${personName(item.personId)} · ${propertyName(item.propertyId)}` })} className="rounded-xl border border-slate-200 px-3.5 py-2 text-xs font-bold text-slate-600 transition hover:border-rose-400 hover:text-rose-600">Finalizar</button><div className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2.5 hidden w-72 -translate-x-1/2 rounded-xl bg-[#071a33] p-3 text-xs font-normal leading-relaxed text-white shadow-2xl transition-all group-hover:block"><span className="block font-bold text-rose-400 mb-1">Cierre de Vínculo</span>Retira formalmente a esta persona como propietaria. Registra la fecha de cese y el motivo (ej. venta o fallecimiento) sin vincular a un nuevo titular.<div className="absolute top-full left-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 bg-[#071a33]"></div></div></div></div></article>)}</div> : <div className="mt-6 rounded-2xl border border-dashed border-slate-300 px-6 py-10 text-center"><p className="font-semibold">No existen propietarios vinculados</p><p className="mt-2 text-sm text-slate-500">{!properties.length ? 'Primero registra los inmuebles.' : !people.length ? 'Ahora registra las personas que serán propietarias.' : 'Selecciona una persona y un inmueble para crear la relación.'}</p></div>}</ListSection>}
 
-      {section === 'staff' && (employments.length ? <ListSection icon={<BriefcaseBusiness size={20} />} eyebrow="Relaciones laborales" title={`${employments.length} trabajadores vigentes`} action="Vincular trabajador" onAction={() => setDialog('employment')}><div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800"><strong>Regla de incompatibilidad:</strong> una persona puede ser propietaria y trabajadora, pero no puede trabajar en el condominio e integrar simultáneamente su junta.</div><div className="grid gap-3 md:grid-cols-2">{employments.map(item => <article key={item.id} className="rounded-2xl border border-slate-200 p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold">{personName(item.personId)}</p><p className="mt-1 text-sm text-[#9a742b]">{item.position}</p></div><Badge tone="green">Vigente</Badge></div><p className="mt-4 text-sm text-slate-500">{item.department || 'Sin departamento'}</p><p className="mt-2 text-xs text-slate-400">{item.engagementType === 'employee' ? 'Relación laboral' : item.engagementType === 'professional-fee' ? 'Honorarios profesionales' : 'Contratista'} · Desde {formatDateTime(item.startsOn)}</p><button type="button" onClick={() => setLifecycleTarget({ kind: 'employment', id: item.id, label: `${personName(item.personId)} · ${item.position}` })} className="mt-4 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Finalizar relación</button></article>)}</div></ListSection> : <EmptyState icon={<BriefcaseBusiness />} title="No hay personal vinculado" copy="Una persona puede trabajar en la comunidad sin ser propietaria. CASA verificará que no integre la junta vigente." action="Vincular primer trabajador" onClick={() => setDialog('employment')} />)}
+      {section === 'staff' && (employments.length ? <ListSection icon={<BriefcaseBusiness size={20} />} eyebrow="Relaciones laborales" title={`${employments.length} trabajadores vigentes`} action="Vincular trabajador" onAction={() => setDialog('employment')}><div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800"><strong>Regla de incompatibilidad:</strong> una persona puede ser propietaria y trabajadora, pero no puede trabajar en el condominio e integrar simultáneamente su junta.</div><div className="grid gap-3 md:grid-cols-2">{employments.map(item => { const access = communityAccesses.find(candidate => candidate.user.person?.id === item.personId); const activeAccess = access?.status === 'ACTIVE'; return <article key={item.id} className="rounded-2xl border border-slate-200 p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold">{personName(item.personId)}</p><p className="mt-1 text-sm text-[#9a742b]">{item.position}</p></div><Badge tone="green">Vigente</Badge></div><div className={`mt-4 rounded-xl border px-3 py-2.5 text-xs ${activeAccess ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}><p className="font-bold">{activeAccess ? `Acceso vigente · ${roleLabel(access?.roleCode ?? '')}` : access ? `Acceso ${access.status.toLowerCase()}` : 'Sin acceso configurado'}</p>{activeAccess && <p className="mt-1">{access.workspaces.filter(workspace => workspace.status === 'ACTIVE').map(workspace => workspaceLabel(workspace.workspaceCode)).join(' · ') || 'Sin espacios vigentes'}</p>}</div><p className="mt-4 text-sm text-slate-500">{item.department || 'Sin departamento'}</p><p className="mt-2 text-xs text-slate-400">{item.engagementType === 'employee' ? 'Relación laboral' : item.engagementType === 'professional-fee' ? 'Honorarios profesionales' : 'Contratista'} · Desde {formatDateTime(item.startsOn)}</p><div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => { if (access && onManageAccess && community?.clientId) onManageAccess(community.clientId, access.id); else { setSelectedEmploymentId(item.id); setDialog('employment-access'); } }} className="rounded-xl bg-[#071a33] px-3 py-2 text-xs font-bold text-white">{access && onManageAccess ? 'Administrar acceso' : 'Crear acceso'}</button><button type="button" onClick={() => setLifecycleTarget({ kind: 'employment', id: item.id, label: `${personName(item.personId)} · ${item.position}` })} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Finalizar relación</button></div></article>; })}</div></ListSection> : <EmptyState icon={<BriefcaseBusiness />} title="No hay personal vinculado" copy="Una persona puede trabajar en el condominio sin ser propietaria. CASA verificará que no integre la junta vigente." action="Vincular primer trabajador" onClick={() => setDialog('employment')} />)}
 
       {section === 'concessions' && (concessions.length ? <ListSection icon={<Store size={20} />} eyebrow="Explotación autorizada" title={`${concessions.length} concesiones`} action="Registrar concesión" onAction={() => { setSelectedConcessionId(null); setDialog('concession'); }}><div className="grid gap-3 md:grid-cols-2">{concessions.map(item => <article key={item.id} className="rounded-2xl border border-slate-200 p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold">{item.code} · {item.name}</p><p className="mt-1 text-sm text-slate-500">{item.holderName}</p></div><Badge tone="gold">{item.currency} {item.monthlyAmount.toLocaleString('es-VE')}</Badge></div><p className="mt-4 text-xs text-slate-400">{item.locationDescription || 'Ubicación no especificada'} · Sin alícuota</p><div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => { setSelectedConcessionId(item.id); setDialog('view-concession'); }} className="rounded-xl bg-[#071a33] px-3 py-2 text-xs font-bold text-white">Ver</button><button type="button" onClick={() => { setSelectedConcessionId(item.id); setDialog('edit-concession'); }} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Editar</button><button type="button" onClick={() => setLifecycleTarget({ kind: 'concession', id: item.id, label: `${item.code} · ${item.name}` })} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Finalizar concesión</button></div></article>)}</div></ListSection> : <EmptyState icon={<Store />} title="No hay concesiones registradas" copy="Una concesión es contractual, puede no tener alícuota y puede generar un canon fijo mensual." action="Registrar primera concesión" onClick={() => { setSelectedConcessionId(null); setDialog('concession'); }} />)}
 
@@ -2003,9 +2140,9 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
           <section>
             <p className="text-xs font-bold uppercase tracking-[.14em] text-slate-400">Cuentas receptoras</p>
             {bankAccounts.length ? (
-              <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-2">
                 {bankAccounts.map((item) => (
-                  <article key={item.id} className="rounded-3xl bg-[#071a33] border border-[#b08a3c]/35 p-6 text-white shadow-xl flex flex-col justify-between relative overflow-hidden group">
+                  <article key={item.id} className="rounded-2xl bg-[#071a33] border border-[#b08a3c]/35 p-4 text-white shadow-lg flex flex-col justify-between relative overflow-hidden group">
                     <div className="absolute -right-6 -bottom-6 w-32 h-32 bg-[#b08a3c]/5 rounded-full blur-2xl pointer-events-none"></div>
                     <div>
                       <div className="flex items-center justify-between">
@@ -2020,9 +2157,9 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
                         </span>
                       </div>
                       
-                      <div className="mt-5">
-                        <h4 className="text-xl font-bold text-[#e5ca8f] tracking-wide">{item.bankName}</h4>
-                        <p className="mt-1.5 font-mono text-base font-bold tracking-[.18em] text-[#d7bb7c]">
+                      <div className="mt-3">
+                        <h4 className="text-base font-bold text-[#e5ca8f] tracking-wide">{item.bankName}</h4>
+                        <p className="mt-1 font-mono text-sm font-bold tracking-[.18em] text-[#d7bb7c]">
                           •••• {item.accountNumber.slice(-4)}
                         </p>
                         <p className="mt-1 text-xs font-bold text-[#d7bb7c]/70 capitalize">
@@ -2039,7 +2176,7 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
                         })()}
                       </div>
 
-                      <div className="mt-5 pt-4 border-t border-white/10 flex items-center justify-between">
+                      <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between">
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-wider text-[#d7bb7c]/60">Titular</p>
                           <p className="text-xs font-bold text-[#e5ca8f] mt-0.5">{item.holder}</p>
@@ -2068,14 +2205,14 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
             )}
           </section>
           <section>
-            <p className="text-xs font-bold uppercase tracking-[.14em] text-slate-400">Métodos aceptados</p>
+            <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-bold uppercase tracking-[.14em] text-slate-400">Métodos aceptados</p><select value={paymentMethodFilter} onChange={event => setPaymentMethodFilter(event.target.value as typeof paymentMethodFilter)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700"><option value="all">Todos</option><option value="mobile-payment">Pago móvil</option><option value="bank-transfer">Transferencia</option><option value="cash">Efectivo</option></select></div>
             {paymentMethods.length ? (
-              <div className="mt-3 space-y-3">
-                {paymentMethods.map((item) => {
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-2">
+                {paymentMethods.filter(item => paymentMethodFilter === 'all' || item.type === paymentMethodFilter).map((item) => {
                   const account = bankAccounts.find((accountItem) => accountItem.id === item.bankAccountId);
                   const Icon = item.type === 'mobile-payment' ? Smartphone : item.type === 'cash' ? Banknote : ArrowLeftRight;
                   return (
-                    <article key={item.id} className="rounded-2xl border border-slate-200 p-4 bg-white shadow-sm flex items-start gap-3">
+                    <article key={item.id} className="rounded-xl border border-slate-200 p-3 bg-white shadow-sm flex items-start gap-3">
                       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f1eadb] text-[#9a742b]">
                         <Icon size={18} />
                       </span>
@@ -2137,18 +2274,19 @@ export default function CoreModule({ initialSection = 'summary', clientId = null
       {dialog === 'community' && <CommunityDialog community={editingCommunity} requireBoardSetup={board.length === 0} requireClientSetup={!demoMode && !editingCommunity} error={communitySaveError} saving={communitySaving} onSubmit={saveCommunity} onClose={() => { setDialog(null); setEditingCommunity(null); setCommunitySaveError(''); }} />}
       {dialog === 'location' && <LocationDialog onSubmit={saveLocation} onClose={() => setDialog(null)} />}
       {dialog === 'property' && <PropertyDialog locations={locations} onSubmit={saveProperty} onClose={() => setDialog(null)} />}
-      {dialog === 'person' && <PersonDialog onSubmit={savePerson} onClose={() => setDialog(null)} />}
+      {dialog === 'person' && <PersonDialog properties={properties} ownerships={ownerships} onSubmit={savePerson} onClose={() => setDialog(null)} />}
       {dialog === 'edit-person' && selectedPersonId && <EditPersonDialog person={data.people.find(item => item.id === selectedPersonId)!} onSubmit={updatePerson} onAddContact={addPersonContact} onDeleteContact={deletePersonContact} onClose={() => { setDialog(null); setSelectedPersonId(null); }} />}
       {dialog === 'ownership' && <OwnershipDialog people={people} properties={properties} ownerships={ownerships} onSubmit={saveOwnership} onClose={() => setDialog(null)} />}
 
       {dialog === 'employment' && <EmploymentDialog people={people} board={board} employments={employments} onSubmit={saveEmployment} onClose={() => setDialog(null)} />}
+      {dialog === 'employment-access' && selectedEmploymentId && <EmploymentAccessDialog person={data.people.find(person => person.id === employments.find(item => item.id === selectedEmploymentId)?.personId)!} onSubmit={createEmploymentAccess} onClose={() => { setDialog(null); setSelectedEmploymentId(null); }} />}
       {dialog === 'concession' && <ConcessionDialog onSubmit={saveConcession} onClose={() => { setDialog(null); setSelectedConcessionId(null); }} />}
       {dialog === 'edit-concession' && selectedConcessionId && <ConcessionDialog concession={data.concessions.find(item => item.id === selectedConcessionId)} onSubmit={saveConcession} onClose={() => { setDialog(null); setSelectedConcessionId(null); }} />}
       {dialog === 'view-concession' && selectedConcessionId && <ConcessionDetailDialog concession={data.concessions.find(item => item.id === selectedConcessionId)!} onEdit={() => setDialog('edit-concession')} onClose={() => { setDialog(null); setSelectedConcessionId(null); }} />}
       {dialog === 'board' && <BoardDialog people={people} properties={properties} employments={employments} ownerships={ownerships} onSubmit={saveBoardAppointment} onClose={() => setDialog(null)} />}
       {dialog === 'bank' && <BankDialog community={community!} onSubmit={saveBank} onClose={() => setDialog(null)} />}
       {dialog === 'edit-bank' && selectedBankAccountId && <EditBankAccountDialog bankAccount={bankAccounts.find(item => item.id === selectedBankAccountId)!} onSubmit={updateBankAccount} onClose={() => { setDialog(null); setSelectedBankAccountId(null); }} />}
-      {dialog === 'payment-method' && <PaymentMethodDialog bankAccounts={bankAccounts} onSubmit={savePaymentMethod} onClose={() => setDialog(null)} />}
+      {dialog === 'payment-method' && <PaymentMethodDialog community={community!} bankAccounts={bankAccounts} onSubmit={savePaymentMethod} onClose={() => setDialog(null)} />}
       {dialog === 'edit-payment-method' && selectedPaymentMethodId && <EditPaymentMethodDialog method={paymentMethods.find(item => item.id === selectedPaymentMethodId)!} bankAccounts={bankAccounts} onSubmit={updatePaymentMethod} onClose={() => { setDialog(null); setSelectedPaymentMethodId(null); }} />}
       {lifecycleTarget && <EndLifecycleDialog target={lifecycleTarget} onSubmit={closeLifecycle} onClose={() => setLifecycleTarget(null)} />}
       {transferOwnershipId && <TransferOwnershipDialog people={people} source={data.ownerships.find(item => item.id === transferOwnershipId)!} personName={personName} propertyName={propertyName} onSubmit={transferOwnership} onClose={() => setTransferOwnershipId(null)} />}
@@ -2207,7 +2345,7 @@ function CommunityDialog({
   const value = community ?? emptyCommunity;
   const [mode, setMode] = useState<AdministrationMode>(value.administrationMode);
   const blankMember = (): InitialBoardMember => ({
-    id: crypto.randomUUID(),
+    id: safeRandomUUID(),
     firstName: '',
     lastName: '',
     documentType: 'V',
@@ -2360,11 +2498,16 @@ function LocationDialog({ onSubmit, onClose }: { onSubmit: (event: FormEvent<HTM
 }
 
 function PropertyDialog({ locations, onSubmit, onClose }: { locations: CoreState['propertyLocations']; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
-  return <Dialog title="Registrar inmueble" description="El código es su identificador visible; no necesita repetirlo en un campo de nombre." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2"><Field label="Categoría"><select name="kind" className={inputClass}>{Object.entries(propertyKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field><Field label="Código único"><input name="code" className={inputClass} required placeholder="Ej.: A-101 / TH-24 / LC-12" /></Field><Field label="Ubicación"><select name="locationId" className={inputClass}><option value="">Directamente en el condominio</option>{locations.map(item => <option key={item.id} value={item.id}>{item.name} · {item.code}</option>)}</select></Field><Field label="Alícuota (%)" hint="Puede quedar pendiente durante la carga inicial."><input name="aliquot" type="number" min="0" max="100" step="0.000001" className={inputClass} /></Field><Field label="Capacidad máxima de personas" hint="Máximo autorizado de personas dentro del inmueble."><input name="maximumOccupancy" type="number" min="1" max="10000" step="1" className={inputClass} required /></Field><Field label="Cupos de brazaletes" hint="Cantidad de brazaletes asignables según la política del condominio."><input name="braceletQuota" type="number" min="0" max="10000" step="1" defaultValue="0" className={inputClass} required /></Field></div><SubmitButton>Registrar inmueble</SubmitButton></form></Dialog>;
+  const [aliquot, setAliquot] = useState('');
+  return <Dialog title="Registrar inmueble" description="El código es su identificador visible; no necesita repetirlo en un campo de nombre." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2"><Field label="Categoría"><select name="kind" className={inputClass}>{Object.entries(propertyKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field><Field label="Código único"><input name="code" className={inputClass} required placeholder="Ej.: A-101 / TH-24 / LC-12" /></Field><Field label="Ubicación"><select name="locationId" className={inputClass}><option value="">Directamente en el condominio</option>{locations.map(item => <option key={item.id} value={item.id}>{item.name} · {item.code}</option>)}</select></Field><Field label="Alícuota (%)" hint="Solo números y un único punto o coma."><input name="aliquot" type="text" inputMode="decimal" value={aliquot} onChange={event => setAliquot(aliquotCharactersOnly(event.target.value))} className={inputClass} /></Field><Field label="Capacidad máxima de personas" hint="Máximo autorizado de personas dentro del inmueble."><input name="maximumOccupancy" type="number" min="1" max="10000" step="1" className={inputClass} required /></Field><Field label="Cupos de brazaletes" hint="Cantidad de brazaletes asignables según la política del condominio."><input name="braceletQuota" type="number" min="0" max="10000" step="1" defaultValue="0" className={inputClass} required /></Field></div><SubmitButton>Registrar inmueble</SubmitButton></form></Dialog>;
 }
 
-function PersonDialog({ onSubmit, onClose }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
-  return <Dialog title="Registrar persona" description="La identidad se registra primero y no queda vinculada automáticamente a ningún inmueble." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2"><Field label="Nombre"><input name="firstName" className={inputClass} required /></Field><Field label="Apellido"><input name="lastName" className={inputClass} required /></Field><Field label="Documento"><div className="grid grid-cols-[78px_1fr] gap-2"><select name="documentType" className={inputClass}><option>V</option><option>E</option><option>J</option><option>P</option></select><input name="documentNumber" inputMode="numeric" className={inputClass} required /></div></Field><Field label="Teléfono"><input name="phone" type="tel" className={inputClass} /></Field><Field label="Correo" span><input name="email" type="email" className={inputClass} /></Field></div><SubmitButton>Registrar persona</SubmitButton></form></Dialog>;
+function PersonDialog({ properties, ownerships, onSubmit, onClose }: { properties: CoreState['properties']; ownerships: CoreState['ownerships']; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
+  const [documentNumber, setDocumentNumber] = useState('');
+  const [email, setEmail] = useState('');
+  const [propertyId, setPropertyId] = useState('');
+  const assignedFor = (id: string) => ownerships.filter(item => item.propertyId === id && item.status === 'active').reduce((sum, item) => sum + item.ownershipPercentage, 0);
+  return <Dialog title="Registrar persona" description="Puedes vincularla a un inmueble durante este mismo registro." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2"><Field label="Nombre"><input name="firstName" className={inputClass} required /></Field><Field label="Apellido"><input name="lastName" className={inputClass} required /></Field><Field label="Documento"><div className="grid grid-cols-[78px_1fr] gap-2"><select name="documentType" className={inputClass}><option>V</option><option>E</option><option>J</option><option>P</option></select><input name="documentNumber" inputMode="numeric" value={documentNumber} onChange={event => setDocumentNumber(digitsOnly(event.target.value))} className={inputClass} required /></div></Field><Field label="Teléfono"><input name="phone" type="tel" className={inputClass} /></Field><Field label="Correo" span><input name="email" type="email" value={email} onChange={event => setEmail(emailCharactersOnly(event.target.value))} className={inputClass} /></Field><div className="sm:col-span-2 border-t border-slate-100 pt-5"><p className="text-sm font-semibold text-[#071a33]">Vinculación opcional a inmueble</p><p className="mt-1 text-xs text-slate-500">La persona quedará registrada y vinculada como propietaria en un solo paso.</p></div><Field label="Inmueble"><select name="propertyId" value={propertyId} onChange={event => setPropertyId(event.target.value)} className={inputClass}><option value="">No vincular por ahora</option>{properties.map(item => { const assigned = assignedFor(item.id); return <option key={item.id} value={item.id} disabled={assigned >= 100}>{item.code} · {assigned >= 100 ? 'Vinculado 100%' : `${100 - assigned}% disponible`}</option>; })}</select></Field>{propertyId && <><Field label="Participación (%)"><input name="ownershipPercentage" type="number" min="0.01" max="100" step="0.01" defaultValue="100" className={inputClass} required /></Field><Field label="Vigente desde" span><input name="startsOn" type="date" defaultValue={new Date().toISOString().slice(0, 10)} className={inputClass} required /></Field></>}</div><SubmitButton>{propertyId ? 'Registrar y vincular inmueble' : 'Registrar persona'}</SubmitButton></form></Dialog>;
 }
 
 function EditPersonDialog({ person, onSubmit, onAddContact, onDeleteContact, onClose }: { person: CoreState['people'][number]; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onAddContact: (type: 'PHONE' | 'EMAIL' | 'WHATSAPP' | 'OTHER', label: string, value: string) => Promise<void>; onDeleteContact: (contactId: string) => Promise<void>; onClose: () => void }) {
@@ -2425,18 +2568,53 @@ function EditPersonDialog({ person, onSubmit, onAddContact, onDeleteContact, onC
 }
 
 
+function PersonSearchSelect({ people, onSelect }: { people: CoreState['people']; onSelect?: (personId: string) => void }) {
+  const [query, setQuery] = useState('');
+  const [selectedId, setSelectedId] = useState('');
+  const matches = people.filter(person => `${person.firstName} ${person.lastName} ${person.documentType} ${person.documentNumber}`.toLocaleLowerCase('es-VE').includes(query.toLocaleLowerCase('es-VE')));
+  const selected = people.find(person => person.id === selectedId);
+  return <div className="mt-2"><input type="hidden" name="personId" value={selectedId} /><input value={query} onChange={event => { setQuery(event.target.value); setSelectedId(''); onSelect?.(''); }} className={`${inputClass.replace('mt-2 ', '')} font-semibold`} placeholder="Buscar por nombre o cédula" aria-label="Buscar persona" /><div className="mt-2 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1">{matches.length ? matches.map(person => <button type="button" key={person.id} onClick={() => { setSelectedId(person.id); setQuery(`${person.firstName} ${person.lastName} · ${person.documentType}-${person.documentNumber}`); onSelect?.(person.id); }} className={`block w-full rounded-lg px-3 py-2 text-left text-sm font-semibold transition hover:bg-[#f8f3e8] ${selectedId === person.id ? 'bg-[#f1eadb] text-[#071a33]' : 'text-slate-700'}`}>{person.firstName} {person.lastName} <span className="text-xs font-semibold text-slate-400">· {person.documentType}-{person.documentNumber}</span></button>) : <p className="px-3 py-3 text-sm text-slate-400">No hay personas que coincidan.</p>}</div>{selected && <p className="mt-2 text-xs font-semibold text-emerald-700">Seleccionada: {selected.firstName} {selected.lastName}</p>}</div>;
+}
+
 function OwnershipDialog({ people, properties, ownerships, onSubmit, onClose }: { people: CoreState['people']; properties: CoreState['properties']; ownerships: CoreState['ownerships']; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
   const assignedFor = (propertyId: string) => ownerships.filter(item => item.propertyId === propertyId && item.status === 'active').reduce((sum, item) => sum + item.ownershipPercentage, 0);
   const hasAvailableProperty = properties.some(item => assignedFor(item.id) < 100);
   const unavailable = !people.length || !hasAvailableProperty;
-  return <Dialog title="Vincular propietario e inmueble" description="La relación guarda porcentaje y vigencia sin modificar la identidad ni el inmueble." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2">{unavailable && <div className="sm:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">{!people.length ? 'Necesitas registrar al menos una persona.' : 'Todos los inmuebles visibles ya tienen el 100% de su propiedad vinculado.'}</div>}<Field label="Persona propietaria" span><select name="personId" className={inputClass} required disabled={!people.length}><option value="">Selecciona una persona</option>{people.map(item => <option key={item.id} value={item.id}>{item.firstName} {item.lastName} · {item.documentType}-{item.documentNumber}</option>)}</select></Field><Field label="Inmueble"><select name="propertyId" className={inputClass} required disabled={!hasAvailableProperty}><option value="">Selecciona un inmueble</option>{properties.map(item => { const assigned = assignedFor(item.id); const linked = assigned >= 100; return <option key={item.id} value={item.id} disabled={linked}>{item.code} · {propertyKindLabels[item.kind]} · {linked ? 'Vinculado 100%' : `${100 - assigned}% disponible`}</option>; })}</select></Field><Field label={<>Participación (%)<HelpTooltip text="Es el porcentaje de propiedad legal que le corresponde a esta persona sobre el inmueble. No es la alícuota usada para calcular el condominio. Si hay copropietarios, la suma de sus participaciones debe llegar a 100%." /></>}><input name="ownershipPercentage" type="number" min="0.01" max="100" step="0.01" defaultValue="100" className={inputClass} required /></Field><Field label="Vigente desde" span><input name="startsOn" type="date" className={inputClass} required /></Field></div><button type="submit" disabled={unavailable} className="mt-8 inline-flex w-full items-center justify-center rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-35">Crear vínculo de propiedad</button></form></Dialog>;
+  return <Dialog title="Vincular propietario e inmueble" description="La relación guarda porcentaje y vigencia sin modificar la identidad ni el inmueble." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2">{unavailable && <div className="sm:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">{!people.length ? 'Necesitas registrar al menos una persona.' : 'Todos los inmuebles visibles ya tienen el 100% de su propiedad vinculado.'}</div>}<Field label="Persona propietaria" span><PersonSearchSelect people={people} /></Field><Field label="Inmueble"><select name="propertyId" className={`${inputClass} font-semibold`} required disabled={!hasAvailableProperty}><option value="">Selecciona un inmueble</option>{properties.map(item => { const assigned = assignedFor(item.id); const linked = assigned >= 100; return <option key={item.id} value={item.id} disabled={linked}>{item.code} · {propertyKindLabels[item.kind]} · {linked ? 'Vinculado 100%' : `${100 - assigned}% disponible`}</option>; })}</select></Field><Field label={<>Participación (%)<HelpTooltip text="Es el porcentaje de propiedad legal que le corresponde a esta persona sobre el inmueble. No es la alícuota usada para calcular el condominio. Si hay copropietarios, la suma de sus participaciones debe llegar a 100%." /></>}><input name="ownershipPercentage" type="number" min="0.01" max="100" step="0.01" defaultValue="100" className={inputClass} required /></Field><Field label="Vigente desde" span><input name="startsOn" type="date" className={inputClass} required /></Field></div><button type="submit" disabled={unavailable} className="mt-8 inline-flex w-full items-center justify-center rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-35">Crear vínculo de propiedad</button></form></Dialog>;
+}
+
+function EmploymentAccessDialog({ person, onSubmit, onClose }: { person: CoreState['people'][number]; onSubmit: (input: { personId: string; roleCode: string; workspaceCodes: string[]; scopes: string[]; pin: string }) => Promise<void>; onClose: () => void }) {
+  const makePin = () => String(Math.floor(10000000 + Math.random() * 90000000));
+  const [pin, setPin] = useState(makePin);
+  const [roleCode, setRoleCode] = useState('LECTURA');
+  const [workspaces, setWorkspaces] = useState<string[]>([]);
+  const [scopes, setScopes] = useState<string[]>([]);
+  const [permissionQuery, setPermissionQuery] = useState('');
+  const [saving, setSaving] = useState(false);
+  const toggle = (value: string, setter: Dispatch<SetStateAction<string[]>>) => setter(current => current.includes(value) ? current.filter(item => item !== value) : [...current, value]);
+  const visibleScopes = scopeCatalog.filter(scope => {
+    const matchingWorkspace = scope.workspaceCode === '*' || workspaces.includes(scope.workspaceCode);
+    const query = permissionQuery.trim().toLocaleLowerCase('es-VE');
+    return matchingWorkspace && (!query || `${scope.label} ${scope.code} ${scope.description}`.toLocaleLowerCase('es-VE').includes(query));
+  });
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await onSubmit({ personId: person.id, roleCode, workspaceCodes: workspaces, scopes: Array.from(new Set([...scopesForWorkspaceFull(workspaces), ...scopes])), pin });
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <Dialog title="Crear acceso de trabajador" description="Configura el usuario, PIN temporal, rol, espacios y permisos de esta persona." onClose={onClose}><form onSubmit={submit}><div className="rounded-2xl bg-[#f8f6f1] p-4"><p className="font-semibold text-[#071a33]">{person.firstName} {person.lastName}</p><p className="mt-1 text-sm text-slate-500">Usuario: {person.email || 'Sin correo registrado'} · Teléfono: {person.phone || 'Sin teléfono registrado'}</p><p className="mt-2 text-xs leading-5 text-slate-500">El acceso se crea con el correo y teléfono registrados. El trabajador podrá modificar sus datos y PIN posteriormente.</p></div>{!person.email && <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Registra un correo en la ficha de la persona antes de crear su acceso.</p>}<div className="mt-5 grid gap-5 sm:grid-cols-2"><Field label="PIN temporal visible"><div className="flex gap-2"><input value={pin} onChange={event => setPin(digitsOnly(event.target.value).slice(0, 8))} inputMode="numeric" minLength={8} maxLength={8} className={inputClass} required /><button type="button" onClick={() => setPin(makePin())} className="mt-2 rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-600">Generar</button></div></Field><Field label="Rol"><select value={roleCode} onChange={event => setRoleCode(event.target.value)} className={inputClass}>{roleCatalog.map(role => <option key={role.code} value={role.code}>{role.label}</option>)}</select></Field></div><fieldset className="mt-6"><legend className="text-sm font-bold text-slate-700">Espacios de trabajo</legend><div className="mt-3 grid gap-2 sm:grid-cols-2">{workspaceCatalog.map(workspace => <label key={workspace.code} className="flex gap-3 rounded-xl border border-slate-200 p-3 text-sm"><input type="checkbox" checked={workspaces.includes(workspace.code)} onChange={() => toggle(workspace.code, setWorkspaces)} className="mt-0.5 accent-[#071a33]" /><span><strong>{workspace.label}</strong><span className="mt-1 block text-xs text-slate-500">{workspace.description}</span></span></label>)}</div></fieldset><fieldset className="mt-6"><legend className="text-sm font-bold text-slate-700">Permisos adicionales</legend><input value={permissionQuery} onChange={event => setPermissionQuery(event.target.value)} className={`${inputClass} mt-2`} placeholder="Buscar permiso por nombre o código" /><div className="mt-3 grid max-h-56 gap-2 overflow-y-auto rounded-xl border border-slate-200 p-3">{visibleScopes.map(scope => <label key={scope.code} className="flex gap-3 text-sm"><input type="checkbox" checked={scopes.includes(scope.code)} onChange={() => toggle(scope.code, setScopes)} className="mt-0.5 accent-[#071a33]" /><span><strong>{scope.label}</strong><span className="mt-0.5 block text-xs text-slate-500">{scope.description}</span></span></label>)}{!visibleScopes.length && <p className="text-sm text-slate-400">No hay permisos para los espacios seleccionados.</p>}</div></fieldset><button type="submit" disabled={saving || !person.email || pin.length !== 8 || !workspaces.length} className="mt-7 inline-flex w-full items-center justify-center rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white disabled:opacity-40">{saving ? 'Creando acceso…' : 'Crear usuario y acceso'}</button></form></Dialog>;
 }
 
 function EmploymentDialog({ people, board, employments, onSubmit, onClose }: { people: CoreState['people']; board: CoreState['boardAppointments']; employments: CoreState['employments']; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
   const activeBoardIds = new Set(board.filter(item => item.status === 'active').map(item => item.personId));
   const employedIds = new Set(employments.filter(item => item.status === 'active').map(item => item.personId));
   const eligible = people.some(item => !activeBoardIds.has(item.id) && !employedIds.has(item.id));
-  return <Dialog title="Vincular trabajador" description="La relación laboral es independiente de la propiedad y conserva su vigencia histórica." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2">{!eligible && <div className="sm:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">No hay personas elegibles. Los integrantes de junta y el personal ya vinculado aparecen visibles, pero no pueden seleccionarse.</div>}<Field label="Persona" span><select name="personId" className={inputClass} required disabled={!eligible}><option value="">Selecciona una persona</option>{people.map(item => { const boardConflict = activeBoardIds.has(item.id); const alreadyEmployed = employedIds.has(item.id); const incompatible = boardConflict || alreadyEmployed; return <option key={item.id} value={item.id} disabled={incompatible}>{item.firstName} {item.lastName} · {item.documentType}-{item.documentNumber}{boardConflict ? ' · Integra la junta' : alreadyEmployed ? ' · Personal vigente' : ''}</option>; })}</select></Field><Field label="Cargo"><input name="position" className={inputClass} required placeholder="Ej.: Coordinador de mantenimiento" /></Field><Field label="Departamento"><input name="department" className={inputClass} required placeholder="Ej.: Operaciones" /></Field><Field label="Tipo de vinculación"><select name="engagementType" className={inputClass}><option value="employee">Relación laboral</option><option value="professional-fee">Honorarios profesionales</option><option value="contractor">Contratista</option></select></Field><Field label="Inicio"><input name="startsOn" type="date" className={inputClass} required /></Field><Field label="Fin previsto"><input name="endsOn" type="date" className={inputClass} /></Field></div><button type="submit" disabled={!eligible} className="mt-8 inline-flex w-full items-center justify-center rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-35">Crear relación laboral</button></form></Dialog>;
+  const eligiblePeople = people.filter(item => !activeBoardIds.has(item.id) && !employedIds.has(item.id));
+  return <Dialog title="Vincular trabajador" description="La relación laboral es independiente de la propiedad y conserva su vigencia histórica." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2">{!eligible && <div className="sm:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">No hay personas elegibles. Los integrantes de junta y el personal ya vinculado aparecen visibles, pero no pueden seleccionarse.</div>}<Field label="Persona" span><PersonSearchSelect people={eligiblePeople} /></Field><Field label="Cargo"><input name="position" className={inputClass} required placeholder="Ej.: Coordinador de mantenimiento" /></Field><Field label="Departamento"><input name="department" className={inputClass} required placeholder="Ej.: Operaciones" /></Field><Field label="Tipo de vinculación"><select name="engagementType" className={inputClass}><option value="employee">Relación laboral</option><option value="professional-fee">Honorarios profesionales</option><option value="contractor">Contratista</option></select></Field><Field label="Inicio"><input name="startsOn" type="date" className={inputClass} required /></Field><Field label="Fin previsto"><input name="endsOn" type="date" className={inputClass} /></Field></div><button type="submit" disabled={!eligible} className="mt-8 inline-flex w-full items-center justify-center rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-35">Crear relación laboral</button></form></Dialog>;
 }
 
 function ConcessionDialog({ concession, onSubmit, onClose }: { concession?: CoreState['concessions'][number]; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
@@ -2482,11 +2660,6 @@ function BoardDialog({
     [employments],
   );
 
-  const ownerPersonIds = useMemo(
-    () => new Set(ownerships.filter((item) => item.status === 'active').map((item) => item.personId)),
-    [ownerships],
-  );
-
   const personProperties = useMemo(() => {
     if (!selectedPersonId) return [];
     const ownedPropertyIds = new Set(
@@ -2518,29 +2691,7 @@ function BoardDialog({
       <form onSubmit={onSubmit}>
         <div className="grid gap-5 sm:grid-cols-2">
           <Field label="Persona / Propietario" span>
-            <select
-              name="personId"
-              className={inputClass}
-              required
-              value={selectedPersonId}
-              onChange={(e) => setSelectedPersonId(e.target.value)}
-            >
-              <option value="">Selecciona una persona</option>
-              {people.map((item) => {
-                const isWorker = employeeIds.has(item.id);
-                const isOwner = ownerPersonIds.has(item.id);
-                const labelSuffix = isWorker
-                  ? ' · Trabajador'
-                  : !isOwner
-                  ? ' · Sin inmueble'
-                  : '';
-                return (
-                  <option key={item.id} value={item.id} disabled={isWorker}>
-                    {item.firstName} {item.lastName} · {item.documentType}-{item.documentNumber}{labelSuffix}
-                  </option>
-                );
-              })}
-            </select>
+            <PersonSearchSelect people={people} onSelect={setSelectedPersonId} />
           </Field>
 
           {selectedPersonIsEmployee && (
@@ -2614,12 +2765,12 @@ function BankDialog({ community, onSubmit, onClose }: { community: Community; on
   return <Dialog title="Agregar cuenta bancaria" description="Registra únicamente los datos de la cuenta. Después podrás habilitar uno o varios métodos de pago sobre ella." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2"><Field label="Banco"><input name="bankName" className={inputClass} required /></Field><Field label="Moneda"><select name="currency" className={inputClass}><option>VES</option><option>USD</option><option>EUR</option><option>Otra</option></select></Field><Field label="Titular"><input name="holder" defaultValue={community.legalName} className={inputClass} required /></Field><Field label="RIF del titular"><input name="holderRif" defaultValue={community.rif} className={inputClass} required /></Field><Field label="Número de cuenta" span><input name="accountNumber" inputMode="numeric" className={inputClass} required minLength={10} /></Field><Field label="Tipo de cuenta"><select name="accountType" className={inputClass}><option value="corriente">Corriente</option><option value="ahorro">Ahorro</option><option value="custodia">Custodia</option><option value="otra">Otra</option></select></Field></div><SubmitButton>Guardar cuenta</SubmitButton></form></Dialog>;
 }
 
-function PaymentMethodDialog({ bankAccounts, onSubmit, onClose }: { bankAccounts: CoreState['bankAccounts']; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
+function PaymentMethodDialog({ community, bankAccounts, onSubmit, onClose }: { community: Community; bankAccounts: CoreState['bankAccounts']; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
   const [type, setType] = useState<'bank-transfer' | 'mobile-payment' | 'cash'>('bank-transfer');
   const [currency, setCurrency] = useState<'VES' | 'USD' | 'EUR'>('VES');
   const compatibleAccounts = bankAccounts.filter(item => item.active && item.currency === currency);
   const requiresAccount = type !== 'cash';
-  return <Dialog title="Agregar método de pago" description="Define cómo puede pagar el propietario y, cuando corresponda, qué cuenta recibirá el dinero." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2"><Field label="Tipo de método"><select name="type" value={type} onChange={event => { const next = event.target.value as typeof type; setType(next); if (next === 'mobile-payment') setCurrency('VES'); }} className={inputClass}><option value="bank-transfer">Transferencia bancaria</option><option value="mobile-payment">Pago móvil</option><option value="cash">Efectivo</option></select></Field><Field label="Nombre visible"><input name="label" className={inputClass} required placeholder="Ej.: Banesco bolívares" /></Field><Field label="Moneda">{type === 'mobile-payment' ? <input name="currency" value="VES" readOnly className={`${inputClass} cursor-not-allowed opacity-60`} /> : <select name="currency" value={currency} onChange={event => setCurrency(event.target.value as typeof currency)} className={inputClass}><option>VES</option><option>USD</option><option>EUR</option></select>}</Field>{requiresAccount && <Field label="Cuenta receptora"><select name="bankAccountId" className={inputClass} required><option value="">Selecciona una cuenta</option>{compatibleAccounts.map(item => <option key={item.id} value={item.id}>{item.bankName} · {item.currency} · •••• {item.accountNumber.slice(-4)}</option>)}</select>{!compatibleAccounts.length && <span className="mt-2 block text-xs font-normal text-amber-700">Primero debes registrar una cuenta activa en {currency}.</span>}</Field>}{type === 'mobile-payment' && <><Field label="Teléfono afiliado"><input name="mobilePhone" type="tel" className={inputClass} required placeholder="0412-1234567" /></Field><Field label="RIF o cédula afiliada"><input name="mobileDocument" className={inputClass} required placeholder="J-12345678-9" /></Field></>}{type === 'cash' && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">El efectivo requerirá posteriormente un recibo de caja y la identificación de quien lo recibió.</div>}<Field label="Instrucciones para el propietario" span><textarea name="instructions" className={`${inputClass} min-h-24 resize-y`} placeholder="Datos o indicaciones que se mostrarán al momento de pagar." /></Field></div><button type="submit" disabled={requiresAccount && !compatibleAccounts.length} className="mt-8 inline-flex w-full items-center justify-center rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-35">Guardar método de pago</button></form></Dialog>;
+  return <Dialog title="Agregar método de pago" description="Define cómo puede pagar el propietario y, cuando corresponda, qué cuenta recibirá el dinero." onClose={onClose}><form onSubmit={onSubmit}><div className="grid gap-5 sm:grid-cols-2"><Field label="Tipo de método"><select name="type" value={type} onChange={event => { const next = event.target.value as typeof type; setType(next); if (next === 'mobile-payment') setCurrency('VES'); }} className={inputClass}><option value="bank-transfer">Transferencia bancaria</option><option value="mobile-payment">Pago móvil</option><option value="cash">Efectivo</option></select></Field><Field label="Nombre visible"><input name="label" className={inputClass} required placeholder="Ej.: Banesco bolívares" /></Field><Field label="Moneda">{type === 'mobile-payment' ? <input name="currency" value="VES" readOnly className={`${inputClass} cursor-not-allowed opacity-60`} /> : <select name="currency" value={currency} onChange={event => setCurrency(event.target.value as typeof currency)} className={inputClass}><option>VES</option><option>USD</option><option>EUR</option></select>}</Field>{requiresAccount && <Field label="Cuenta receptora"><select name="bankAccountId" className={inputClass} required><option value="">Selecciona una cuenta</option>{compatibleAccounts.map(item => <option key={item.id} value={item.id}>{item.bankName} · {item.currency} · •••• {item.accountNumber.slice(-4)}</option>)}</select>{!compatibleAccounts.length && <span className="mt-2 block text-xs font-normal text-amber-700">Primero debes registrar una cuenta activa en {currency}.</span>}</Field>}{type === 'mobile-payment' && <><Field label="Teléfono afiliado"><input name="mobilePhone" type="tel" className={inputClass} required placeholder="0412-1234567" /></Field><Field label="RIF o cédula afiliada"><input name="mobileDocument" defaultValue={community.rif} className={inputClass} required placeholder="J-12345678-9" /></Field></>}{type === 'cash' && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">El efectivo requerirá posteriormente un recibo de caja y la identificación de quien lo recibió.</div>}<Field label="Instrucciones para el propietario" span><textarea name="instructions" className={`${inputClass} min-h-24 resize-y`} placeholder="Datos o indicaciones que se mostrarán al momento de pagar." /></Field></div><button type="submit" disabled={requiresAccount && !compatibleAccounts.length} className="mt-8 inline-flex w-full items-center justify-center rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-35">Guardar método de pago</button></form></Dialog>;
 }
 
 function EndLifecycleDialog({ target, onSubmit, onClose }: { target: NonNullable<LifecycleTarget>; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {

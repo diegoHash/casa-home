@@ -1,9 +1,10 @@
 import type { PlatformAuditEvent, SuperAdminState } from '../domain/superAdmin';
+import { safeRandomUUID } from '../utils/uuid';
 
 const STORAGE_KEY = 'casa_super_admin_v1';
 
 export function platformId(prefix: string) {
-  return `${prefix}_${crypto.randomUUID()}`;
+  return `${prefix}_${safeRandomUUID()}`;
 }
 
 export function platformAudit(action: string, target: string, detail: string, severity: PlatformAuditEvent['severity'] = 'info'): PlatformAuditEvent {

@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.168');
-const API_URL = import.meta.env.VITE_API_URL || (isLocal ? 'http://localhost:9590/etecc/cbt/auth' : 'https://gateway.caribbean-one.site/etecc/cbt/auth');
+const API_URL = import.meta.env.VITE_API_URL || (isLocal ? 'http://localhost:3001/v1/auth' : '/v1/auth');
 const REQUEST_TIMEOUT_MS = 15000;
 
 const api = axios.create({

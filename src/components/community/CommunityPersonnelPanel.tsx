@@ -17,14 +17,12 @@ import {
 import { WorkspacePermissionsTree } from './WorkspacePermissionsTree';
 import {
   communityFullAccessScope,
-  explicitScopeCatalog,
-  inferAccessMode,
-  ownerServiceAgentScopes,
+  normalizeWorkspaceScopes,
   roleCatalog,
   scopeCatalog,
   scopeIsGranted,
-  scopesForWorkspaceFull,
-  type AccessMode,
+  scopesDefaultsForRole,
+  workspaceDefaultsForRole,
 } from '../../config/communityAccessCatalog';
 import { workspaceCatalog, workspaceLabel } from '../../config/workspaceCatalog';
 import type {
@@ -55,22 +53,29 @@ export function CommunityPersonnelPanel({
   const [notice, setNotice] = useState('');
   const [creatingPersonId, setCreatingPersonId] = useState<string | null>(null);
   const [editing, setEditing] = useState<CommunityAccessRecord | null>(null);
+  const [revoking, setRevoking] = useState<CommunityAccessRecord | null>(null);
+  const [revokeReason, setRevokeReason] = useState('');
 
   const allowedScopes = useMemo(
     () =>
       scopeCatalog.filter((scope) =>
-        scopeIsGranted(grantedScopes, scope.code),
+        scopeIsGranted(
+          normalizeWorkspaceScopes(grantedScopes, grantedWorkspaces),
+          scope.code,
+        ),
       ),
-    [grantedScopes],
+    [grantedScopes, grantedWorkspaces],
   );
   const allowedWorkspaces = useMemo(
     () =>
       workspaceCatalog.filter(
         (workspace) =>
           grantedWorkspaces.includes('*') ||
+          grantedScopes.includes('*') ||
+          grantedScopes.includes(communityFullAccessScope) ||
           grantedWorkspaces.includes(workspace.code),
       ),
-    [grantedWorkspaces],
+    [grantedScopes, grantedWorkspaces],
   );
 
   const load = async () => {
@@ -190,6 +195,32 @@ export function CommunityPersonnelPanel({
         updateError instanceof Error
           ? updateError.message
           : 'No fue posible actualizar el acceso.',
+      );
+    }
+  };
+
+  const handleRevoke = async () => {
+    if (!revoking) return;
+    if (revokeReason.trim().length < 8) {
+      setError('Explica brevemente el motivo de la revocación.');
+      return;
+    }
+    setError('');
+    setNotice('');
+    try {
+      await CommunityWorkspaceService.revokeAccessUser(
+        revoking.id,
+        revokeReason.trim(),
+      );
+      setRevoking(null);
+      setRevokeReason('');
+      setNotice('Acceso revocado y sesiones anteriores cerradas.');
+      await load();
+    } catch (revokeError) {
+      setError(
+        revokeError instanceof Error
+          ? revokeError.message
+          : 'No fue posible revocar el acceso.',
       );
     }
   };
@@ -319,30 +350,51 @@ export function CommunityPersonnelPanel({
                       ))}
                     </div>
                   </div>
-                  <button
-                    disabled={!manageable}
-                    onClick={() => {
-                      setError('');
-                      setEditing(record);
-                    }}
-                    title={
-                      manageable
-                        ? 'Editar acceso'
-                        : !record.employmentActive
-                          ? 'Acceso histórico: la persona no tiene una relación laboral vigente.'
-                          : record.status !== 'ACTIVE'
-                            ? 'El acceso no está activo.'
-                            : 'No puedes modificar tu propio acceso ni uno superior a tu autorización.'
-                    }
-                    className="inline-flex items-center justify-center gap-2 rounded-full border border-[#071a33]/12 bg-white px-4 py-2.5 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    <KeyRound size={15} /> {!record.employmentActive
-                      ? 'Acceso histórico'
-                      : record.status === 'BLOCKED'
-                        ? 'Reactivar acceso'
-                        : 'Editar autoridad'}
-                  </button>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button
+                      disabled={!manageable}
+                      onClick={() => {
+                        setError('');
+                        setEditing(record);
+                      }}
+                      title={
+                        manageable
+                          ? 'Editar acceso'
+                          : !record.employmentActive
+                            ? 'Acceso histórico: la persona no tiene una relación laboral vigente.'
+                            : record.status !== 'ACTIVE'
+                              ? 'El acceso no está activo.'
+                              : 'No puedes modificar tu propio acceso ni uno superior a tu autorización.'
+                      }
+                      className="inline-flex items-center justify-center gap-2 rounded-full border border-[#071a33]/12 bg-white px-4 py-2.5 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <KeyRound size={15} /> {!record.employmentActive
+                        ? 'Acceso histórico'
+                        : record.status === 'BLOCKED'
+                          ? 'Reactivar acceso'
+                          : 'Editar autoridad'}
+                    </button>
+                    {manageable && record.status === 'ACTIVE' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setError('');
+                          setRevokeReason('');
+                          setRevoking(record);
+                        }}
+                        className="rounded-full border border-rose-200 px-4 py-2.5 text-sm font-bold text-rose-700 hover:bg-rose-50"
+                      >
+                        Revocar acceso
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {revoking?.id === record.id && (
+                  <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                    <label className="block text-xs font-bold text-rose-800">Motivo obligatorio<textarea value={revokeReason} onChange={(event) => setRevokeReason(event.target.value)} rows={2} maxLength={500} className="mt-2 w-full rounded-xl border border-rose-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-rose-400" placeholder="Ej.: Terminación de funciones." /></label>
+                    <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => { setRevoking(null); setRevokeReason(''); }} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold">Cancelar</button><button type="button" onClick={() => void handleRevoke()} className="rounded-full bg-rose-700 px-4 py-2 text-xs font-bold text-white">Confirmar revocación</button></div>
+                  </div>
+                )}
               </article>
             );
           })}
@@ -390,8 +442,8 @@ function AccessModal({
 }) {
   return (
     <div className="fixed inset-0 z-[80] overflow-y-auto bg-[#071a33]/65 px-4 py-8 backdrop-blur-sm">
-      <div className="mx-auto max-w-3xl rounded-[1.75rem] bg-[#f8f6f0] shadow-2xl">
-        <header className="sticky top-0 z-10 flex items-center justify-between rounded-t-[1.75rem] border-b border-[#071a33]/8 bg-[#f8f6f0]/95 px-5 py-4 backdrop-blur">
+      <div className="mx-auto flex max-h-[calc(100vh-4rem)] max-w-3xl flex-col overflow-hidden rounded-[1.75rem] bg-[#f8f6f0] shadow-2xl">
+        <header className="flex shrink-0 items-center justify-between rounded-t-[1.75rem] border-b border-[#071a33]/8 bg-[#f8f6f0] px-5 py-4">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#9c7532]">CASA</p>
             <h3 className="mt-1 text-lg font-semibold">{title}</h3>
@@ -400,7 +452,7 @@ function AccessModal({
             <X size={18} />
           </button>
         </header>
-        <div className="p-5 sm:p-7">{children}</div>
+        <div className="min-h-0 overflow-y-auto p-5 sm:p-7">{children}</div>
       </div>
     </div>
   );
@@ -429,45 +481,35 @@ function AccessForm({
   const selectedPerson = personnel.find(
     (worker) => worker.personId === selectedPersonId,
   );
-  const initialWorkspaceCodes =
-    record?.workspaces
-      .filter((workspace) => workspace.status === 'ACTIVE')
-      .map((workspace) => workspace.workspaceCode) ??
-    (allowedWorkspaces[0] ? [allowedWorkspaces[0].code] : []);
-  const [accessMode, setAccessMode] = useState<AccessMode>(
-    record ? inferAccessMode(record.scopes) : 'CUSTOM',
+  const initialRoleCode = record?.roleCode ?? 'LECTURA';
+  const allowedWorkspaceCodes = new Set<string>(
+    allowedWorkspaces.map((workspace) => workspace.code),
   );
+  const initialWorkspaceCodes = record
+    ? initialRoleCode === 'ADMINISTRADOR_INTEGRAL'
+      ? workspaceCatalog.map((workspace) => workspace.code)
+      : record.workspaces
+          .filter((workspace) => workspace.status === 'ACTIVE')
+          .map((workspace) => workspace.workspaceCode)
+    : workspaceDefaultsForRole(initialRoleCode).filter((workspaceCode) =>
+        allowedWorkspaceCodes.has(workspaceCode),
+      );
   const [selectedRole, setSelectedRole] = useState(
-    record?.roleCode ?? 'ADMINISTRACION',
+    initialRoleCode,
   );
   const [selectedWorkspaceCodes, setSelectedWorkspaceCodes] = useState<string[]>(
     initialWorkspaceCodes,
   );
-  const allowedExplicitScopes = allowedScopes.filter((scope) =>
-    explicitScopeCatalog.some((explicit) => explicit.code === scope.code),
-  );
   const [selectedScopes, setSelectedScopes] = useState<string[]>(
-    record?.scopes.filter((scope) =>
-      allowedExplicitScopes.some((allowed) => allowed.code === scope),
-    ) ?? (allowedExplicitScopes[0] ? [allowedExplicitScopes[0].code] : []),
+    (record ? normalizeWorkspaceScopes(record.scopes, initialWorkspaceCodes) : undefined)?.filter((scope) =>
+      allowedScopes.some((allowed) => allowed.code === scope),
+    ) ?? scopesDefaultsForRole(initialRoleCode, initialWorkspaceCodes).filter(
+      (scope) => allowedScopes.some((allowed) => allowed.code === scope),
+    ),
   );
-  const canGrantCommunityFull = allowedScopes.some(
-    (scope) => scope.code === communityFullAccessScope,
-  );
-  const effectiveWorkspaceCodes =
-    accessMode === 'COMMUNITY_FULL'
-      ? allowedWorkspaces.map((workspace) => workspace.code)
-      : selectedWorkspaceCodes;
-  const requestedWorkspaceFullScopes =
-    scopesForWorkspaceFull(effectiveWorkspaceCodes);
-  const effectiveScopes =
-    accessMode === 'COMMUNITY_FULL'
-      ? [communityFullAccessScope]
-      : accessMode === 'WORKSPACE_FULL'
-        ? requestedWorkspaceFullScopes.filter((scope) =>
-            allowedScopes.some((allowed) => allowed.code === scope),
-          )
-        : selectedScopes;
+  const effectiveWorkspaceCodes = selectedWorkspaceCodes;
+  const effectiveScopes = selectedScopes;
+  const hasCommunityFullAccess = selectedScopes.includes(communityFullAccessScope);
   return (
     <form onSubmit={onSubmit}>
       {effectiveWorkspaceCodes.map((workspaceCode) => (
@@ -565,51 +607,6 @@ function AccessForm({
         </div>
       )}
 
-      <fieldset className="mt-6">
-        <legend className="text-sm font-bold">Nivel de acceso</legend>
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          {([
-            ['CUSTOM', 'Personalizado', 'Capacidades individuales.'],
-            ['WORKSPACE_FULL', 'Total por espacio', 'Todo en las áreas elegidas.'],
-            ['COMMUNITY_FULL', 'Integral', 'Toda la comunidad.'],
-          ] as const).map(([mode, label, description]) => {
-            const disabled = mode === 'COMMUNITY_FULL' && !canGrantCommunityFull;
-            return (
-              <button
-                key={mode}
-                type="button"
-                disabled={disabled}
-                onClick={() => {
-                  setAccessMode(mode);
-                  if (mode === 'COMMUNITY_FULL') {
-                    setSelectedRole('ADMINISTRADOR_INTEGRAL');
-                    setSelectedWorkspaceCodes(
-                      allowedWorkspaces.map((workspace) => workspace.code),
-                    );
-                  }
-                }}
-                className={`rounded-xl border p-3 text-left disabled:cursor-not-allowed disabled:opacity-40 ${
-                  accessMode === mode
-                    ? 'border-[#b08a3c] bg-[#f3ecdc]'
-                    : 'border-[#071a33]/8 bg-white'
-                }`}
-              >
-                <span className="block text-sm font-bold">{label}</span>
-                <span className="mt-1 block text-xs leading-5 text-slate-500">
-                  {description}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        {accessMode === 'COMMUNITY_FULL' && (
-          <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-            Autoridad operativa total en esta comunidad. No concede acceso ROOT,
-            control comercial de licencias ni acceso a otros clientes.
-          </p>
-        )}
-      </fieldset>
-
       <Field label="Rol operativo" wide>
         <select
           name="roleCode"
@@ -618,22 +615,19 @@ function AccessForm({
           onChange={(event) => {
             const roleCode = event.target.value;
             setSelectedRole(roleCode);
-            if (!record && roleCode === 'ADMINISTRADOR_INTEGRAL') {
-              setAccessMode('COMMUNITY_FULL');
-              setSelectedWorkspaceCodes(
-                allowedWorkspaces.map((workspace) => workspace.code),
-              );
-            } else if (!record && roleCode === 'ATENCION') {
-              setAccessMode('CUSTOM');
-              setSelectedWorkspaceCodes(['OWNER_SERVICE']);
-              setSelectedScopes(
-                ownerServiceAgentScopes.filter((scope) =>
-                  allowedExplicitScopes.some(
-                    (allowed) => allowed.code === scope,
-                  ),
-                ),
-              );
-            }
+            const defaultWorkspaces = workspaceDefaultsForRole(roleCode).filter(
+              (workspaceCode) => allowedWorkspaceCodes.has(workspaceCode),
+            );
+            const roleScopes = scopesDefaultsForRole(
+              roleCode,
+              defaultWorkspaces,
+            );
+            setSelectedWorkspaceCodes(defaultWorkspaces);
+            setSelectedScopes(
+              roleScopes.filter((scope) =>
+                allowedScopes.some((allowed) => allowed.code === scope),
+              ),
+            );
           }}
         >
           {roleCatalog.map((role) => <option key={role.code} value={role.code}>{role.label}</option>)}
@@ -652,7 +646,7 @@ function AccessForm({
                 type="checkbox"
                 value={workspace.code}
                 checked={
-                  accessMode === 'COMMUNITY_FULL' ||
+                  hasCommunityFullAccess ||
                   selectedWorkspaceCodes.includes(workspace.code)
                 }
                 onChange={() =>
@@ -662,7 +656,7 @@ function AccessForm({
                       : [...current, workspace.code],
                   )
                 }
-                disabled={accessMode === 'COMMUNITY_FULL'}
+                disabled={hasCommunityFullAccess}
                 className="mt-0.5 accent-[#071a33]"
               />
               <span><strong className="block">{workspace.label}</strong><span className="mt-1 block text-xs leading-5 text-slate-500">{workspace.description}</span></span>
@@ -673,10 +667,10 @@ function AccessForm({
 
       <div className="mt-6">
         <WorkspacePermissionsTree
-          accessMode={accessMode}
+          accessMode="CUSTOM"
           selectedWorkspaces={effectiveWorkspaceCodes}
           selectedScopes={selectedScopes}
-          onToggleWorkspace={(_wsCode) => {
+          onToggleWorkspace={() => {
             // Workspace toggle in panel
           }}
           onToggleScope={(scopeCode) =>
@@ -686,10 +680,16 @@ function AccessForm({
                 : [...current, scopeCode],
             )
           }
-          onSelectAllInWorkspace={(_wsCode, scopeCodes) => {
+          onSelectAllInWorkspace={(wsCode, scopeCodes) => {
+            setSelectedWorkspaceCodes((current) =>
+              Array.from(new Set([...current, wsCode])),
+            );
             setSelectedScopes((current) => Array.from(new Set([...current, ...scopeCodes])));
           }}
-          onDeselectAllInWorkspace={(_wsCode, scopeCodes) => {
+          onDeselectAllInWorkspace={(wsCode, scopeCodes) => {
+            setSelectedWorkspaceCodes((current) =>
+              current.filter((code) => code !== wsCode),
+            );
             setSelectedScopes((current) => current.filter((code) => !scopeCodes.includes(code)));
           }}
         />

@@ -1,8 +1,8 @@
-import { AlertCircle, Building2, CheckCircle2, Landmark, Printer, ReceiptText, Smartphone } from 'lucide-react';
+import { useMemo } from 'react';
+import { Landmark, Printer, ReceiptText, Smartphone } from 'lucide-react';
 
 const aliquot = 1.2846;
 const bcvRate = 151;
-const bcvRateDate = '17/07/2026';
 const formatUSD = (value: number) => new Intl.NumberFormat('es-VE', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value);
 const formatVES = (value: number) => new Intl.NumberFormat('es-VE', { style: 'currency', currency: 'VES', minimumFractionDigits: 2 }).format(value);
 
@@ -77,8 +77,6 @@ const adjustments = [
   { id: 'AJ-005', label: 'Cuota de emergencia', description: 'No se emitieron cuotas de emergencia durante este período.', communityAmount: 0, propertyAmount: 0, applies: false },
 ];
 
-// Esta política pertenece a la configuración financiera de cada condominio.
-// Cuando está desactivada, el concepto y su monto no forman parte del aviso.
 const showIncomeInChargeNotice = true;
 
 const credits = [
@@ -96,100 +94,458 @@ function categoryTotal(category: Category) {
   return category.expenses.reduce((sum, expense) => sum + expense.monthlyTotal, 0);
 }
 
-function propertyShare(value: number) {
-  return value * (aliquot / 100);
+export interface ChargeNoticeProps {
+  scope?: 'PROPERTY' | 'COMMUNITY';
+  notice?: {
+    id: string;
+    billingPeriod: string;
+    issuedAt: string;
+    bcvRate?: number;
+    totalExpensesVes?: number;
+    totalComponentsVes?: number;
+    totalCommunityVes?: number;
+    totalCommunityUsd?: number;
+    components: Array<{
+      id: string;
+      label: string;
+      type: string;
+      amountVes: number;
+      propertyAmountVes: number;
+      propertyAmountUsd: number;
+      allocationMethod: 'ALIQUOT' | 'FIXED';
+    }>;
+    expenses?: Array<{
+      id: string;
+      description: string;
+      amount: number;
+      currency: string;
+      propertyAmountVes: number;
+      propertyAmountUsd: number;
+      allocationMethod: 'ALIQUOT' | 'FIXED';
+      concept: {
+        id: string;
+        name: string;
+        category: {
+          id: string;
+          name: string;
+        };
+      };
+    }>;
+    allocation: {
+      id: string;
+      aliquotSnapshot: number;
+      expenseShareVes: number;
+      componentShareVes: number;
+      totalVes: number;
+      totalUsd: number;
+    } | null;
+  } | null;
+  community?: {
+    id?: string;
+    name?: string;
+    rif?: string;
+    address?: string;
+    city?: string;
+    state?: string;
+    phone?: string;
+    bankAccounts?: Array<{
+      id: string;
+      bankName: string;
+      holder: string;
+      holderRif: string;
+      accountNumber: string;
+      accountType: string;
+      currency: string;
+    }>;
+    paymentMethods?: Array<{
+      id: string;
+      type: string;
+      label: string;
+      currency: string;
+      mobilePhone?: string | null;
+      mobileDocument?: string | null;
+      instructions?: string | null;
+    }>;
+  } | null;
+  ownerName?: string;
+  propertyCode?: string;
+  towerName?: string;
+  communityRif?: string;
+  communityName?: string;
 }
 
-export default function ChargeNotice() {
-  const appliedCredits = showIncomeInChargeNotice ? [...credits, communityIncome] : credits;
+export default function ChargeNotice({
+  notice,
+  community,
+  ownerName,
+  propertyCode,
+  towerName,
+  communityRif,
+  communityName,
+  scope = 'PROPERTY',
+}: ChargeNoticeProps) {
+  const isDynamic = !!notice;
+  const isCommunityScope = scope === 'COMMUNITY';
+  const chargeTargetLabel = isCommunityScope ? 'Comunidad' : 'Tu inmueble';
+  const dynamicBcvRate = isDynamic && notice?.bcvRate ? Number(notice.bcvRate) : bcvRate;
+
+  const rawAliquot = isDynamic
+    ? (notice?.allocation?.aliquotSnapshot ? Number(notice.allocation.aliquotSnapshot) : 0)
+    : aliquot;
+  const displayAliquot = rawAliquot;
+  const dynamicAliquot = displayAliquot / 100;
+
+  const propertyShare = (value: number) => {
+    return value * dynamicAliquot;
+  };
+
+  const getExpenseUSD = (amount: number, currency: string) => {
+    return currency === 'USD' ? amount : amount / dynamicBcvRate;
+  };
+
+  // Group and sort expenses by category for dynamic mode
+  const dynamicCategories = useMemo(() => {
+    if (!notice?.expenses) return [];
+    const map: Record<string, { id: string; name: string; expenses: any[] }> = {};
+    for (const exp of notice.expenses) {
+      const cat = exp.concept.category;
+      if (!map[cat.id]) {
+        map[cat.id] = {
+          id: cat.id,
+          name: cat.name,
+          expenses: [],
+        };
+      }
+      map[cat.id].expenses.push({
+        id: exp.id,
+        description: exp.description,
+        amount: exp.amount,
+        currency: exp.currency,
+        propertyAmountVes: exp.propertyAmountVes,
+        propertyAmountUsd: exp.propertyAmountUsd,
+        conceptName: exp.concept.name,
+      });
+    }
+    return Object.values(map);
+  }, [notice?.expenses]);
+
+  // Let's compute totals
+  const ordinaryPropertyTotal = isDynamic
+    ? (notice!.allocation?.expenseShareVes ?? 0)
+    : categories.reduce((sum, category) => sum + propertyShare(categoryTotal(category)), 0);
+
+  // In dynamic mode, we display the notice allocations directly
+  const propertyPayable = isDynamic
+    ? (notice!.allocation?.totalUsd ?? 0)
+    : (ordinaryPropertyTotal + adjustments.reduce((s, i) => s + (i.applies ? i.propertyAmount : 0), 0) + credits.reduce((s, i) => s + i.amount, 0) + (showIncomeInChargeNotice ? communityIncome.amount : 0));
+
+  const propertyPayableVES = isDynamic
+    ? (notice!.allocation?.totalVes ?? 0)
+    : propertyPayable * bcvRate;
+
   const appliedAdjustments = adjustments.filter(item => item.applies && (item.communityAmount > 0 || item.propertyAmount > 0));
-  const ordinaryTotal = categories.reduce((sum, category) => sum + categoryTotal(category), 0);
-  const ordinaryPropertyTotal = categories.reduce((sum, category) => sum + propertyShare(categoryTotal(category)), 0);
-  const adjustmentsTotal = appliedAdjustments.reduce((sum, item) => sum + item.communityAmount, 0);
+
   const propertyAdjustmentsTotal = appliedAdjustments.reduce((sum, item) => sum + item.propertyAmount, 0);
-  const creditsTotal = appliedCredits.reduce((sum, item) => sum + item.amount, 0);
-  const noticeTotal = ordinaryTotal + adjustmentsTotal;
-  const grossPropertyTotal = ordinaryPropertyTotal + propertyAdjustmentsTotal;
-  const propertyPayable = grossPropertyTotal + creditsTotal;
-  const propertyPayableVES = propertyPayable * bcvRate;
+  const grossPropertyTotal = isDynamic
+    ? (notice!.allocation?.totalVes ?? (ordinaryPropertyTotal + (notice!.allocation?.componentShareVes ? Number(notice.allocation.componentShareVes) : 0)))
+    : (ordinaryPropertyTotal + propertyAdjustmentsTotal);
 
-  return <article id="charge-notice" className="overflow-hidden rounded-[2rem] border border-[#0b1d33]/10 bg-white shadow-[0_24px_70px_rgba(8,29,51,.08)] print:rounded-none print:border-0 print:shadow-none">
-    <header className="relative overflow-hidden bg-[#0b1d33] px-6 py-7 text-white sm:px-9 sm:py-9 print:bg-white print:px-0 print:text-[#0b1d33]">
-      <div className="absolute -right-16 -top-16 h-52 w-52 rounded-full bg-[#d6af57]/15 blur-2xl print:hidden" />
-      <div className="relative flex flex-col gap-7 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-center gap-4">
-          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-[#e6c66f]/35 bg-white/10 text-xl font-black tracking-[-.08em] text-[#f0cf77] print:border-[#0b1d33]/15 print:bg-[#0b1d33]">CM</div>
-          <div><p className="text-[10px] font-bold uppercase tracking-[.24em] text-[#f0cf77] print:text-[#9b752c]">Caribbean Marina</p><h1 className="mt-1 text-xl font-semibold">Condominio Caribbean Marina</h1><p className="mt-1 text-xs text-white/50 print:text-slate-500">RIF J-41234567-8 · La Guaira, Venezuela</p></div>
+  return (
+    <article id="charge-notice" className="overflow-hidden rounded-[1.5rem] border border-[#0b1d33]/10 bg-white shadow-[0_20px_60px_rgba(8,29,51,.06)] print:rounded-none print:border-0 print:shadow-none print:m-0 print:p-0">
+      <style>{`
+        @media print {
+          @page {
+            size: letter;
+            margin: 0.3cm;
+          }
+          body {
+            background: white !important;
+            color: #0b1d33 !important;
+            font-size: 10px !important;
+          }
+          #charge-notice {
+            border: 0 !important;
+            box-shadow: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+          }
+          .no-print {
+            display: none !important;
+          }
+          .charge-section {
+            margin-top: 0.6rem !important;
+          }
+          .charge-category {
+            border-radius: 0.5rem !important;
+          }
+          td, th {
+            padding: 4px 6px !important;
+          }
+        }
+      `}</style>
+
+      <header className="relative overflow-hidden bg-[#0b1d33] px-5 py-5 text-white sm:px-7 sm:py-6 print:bg-white print:px-0 print:text-[#0b1d33]">
+        <div className="absolute -right-16 -top-16 h-40 w-40 rounded-full bg-[#d6af57]/10 blur-2xl print:hidden" />
+        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[#e6c66f]/35 bg-white/10 text-sm font-black tracking-[-.08em] text-[#f0cf77] print:border-[#0b1d33]/15 print:bg-[#0b1d33]">CM</div>
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#f0cf77] print:text-[#9b752c]">{communityName || community?.name || 'Condominio Caribbean Marina'}</p>
+              <h1 className="mt-0.5 text-base font-semibold">{communityName || community?.name || 'Condominio Caribbean Marina'}</h1>
+              <p className="mt-0.5 text-[11px] text-white/65 print:text-slate-500">RIF {communityRif || community?.rif || 'No registrado'}{community?.address ? ` · ${community.address}, ${[community.city, community.state].filter(Boolean).join(', ')}` : ''}{community?.phone ? ` · Tel. ${community.phone}` : ''}</p>
+            </div>
+          </div>
+          <div className="sm:text-right">
+            <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#f0cf77] print:text-[#9b752c]">Aviso de cobro</p>
+            <p className="mt-1 text-lg font-semibold">{notice?.billingPeriod || 'Julio 2026'}</p>
+            <p className="mt-0.5 font-mono text-[10px] text-white/45 print:text-slate-500">{notice?.id || 'AC-2026-07-B402'}</p>
+          </div>
         </div>
-        <div className="sm:text-right"><p className="text-[10px] font-bold uppercase tracking-[.22em] text-[#f0cf77] print:text-[#9b752c]">Aviso de cobro</p><p className="mt-2 text-2xl font-semibold">Julio 2026</p><p className="mt-1 font-mono text-xs text-white/50 print:text-slate-500">AC-2026-07-B402</p></div>
+        <div className="relative mt-5 grid gap-3 border-t border-white/10 pt-4 text-xs sm:grid-cols-4 print:border-slate-200">
+          <div><p className="text-white/45 print:text-slate-400">{isCommunityScope ? 'Alcance' : 'Propietario'}</p><p className="mt-0.5 font-semibold">{ownerName || (isDynamic ? 'No registrado' : 'Alejandro Mendoza R.')}</p></div>
+          <div><p className="text-white/45 print:text-slate-400">{isCommunityScope ? 'Inmuebles incluidos' : 'Inmueble'}</p><p className="mt-0.5 font-semibold">{isCommunityScope ? 'Todos los inmuebles' : `${towerName || 'Torre B'} · Apto. ${propertyCode || 'B-402'}`}</p></div>
+          <div><p className="text-white/45 print:text-slate-400">{isCommunityScope ? 'Distribución' : 'Alícuota'}</p><p className="mt-0.5 font-semibold">{isCommunityScope ? 'Totales comunitarios' : `${displayAliquot.toFixed(4).replace('.', ',')}%`}</p></div>
+          <div><p className="text-white/45 print:text-slate-400">Fecha de vencimiento</p><p className="mt-0.5 font-semibold text-[#f0cf77] print:text-[#9b752c]">{notice?.issuedAt ? new Date(new Date(notice.issuedAt).getTime() + 15 * 24 * 60 * 60 * 1000).toLocaleDateString('es-VE') : isDynamic ? 'Pendiente de emisión' : '31 de julio de 2026'}</p></div>
+        </div>
+      </header>
+
+      <div className="p-5 sm:p-7 print:p-0 print:pt-4">
+        <section className="charge-section mt-1">
+          <div className="flex items-start gap-2.5">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#f1eadb] text-[#9b752c]"><ReceiptText size={16} /></span>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[.16em] text-[#9b752c]">01 · Detalle de Gastos de la Comunidad</p>
+              <p className="text-xs text-slate-500">Gastos ordinarios del condominio correspondientes al periodo corriente.</p>
+            </div>
+          </div>
+          <div className="mt-3.5 space-y-3">
+            {isDynamic && notice.expenses && notice.expenses.length > 0 ? (
+              dynamicCategories.map((category) => {
+                const totalUSD = category.expenses.reduce((sum, e) => sum + getExpenseUSD(e.amount, e.currency), 0);
+                return (
+                  <section key={category.id} className="charge-category overflow-hidden rounded-xl border border-slate-200 break-inside-avoid">
+                    <header className="grid gap-2 bg-[#f8f6f1] p-3 sm:grid-cols-[100px_1fr_auto_auto] sm:items-center">
+                      <p className="font-mono text-[10px] font-bold text-[#9b752c]">{category.id.slice(-7).toUpperCase()}</p>
+                      <div><h3 className="font-semibold text-xs text-slate-800">{category.name}</h3></div>
+                      <div className="sm:text-right"><p className="text-[9px] uppercase tracking-wider text-slate-400">Total mes</p><p className="text-xs font-bold">{formatUSD(totalUSD)}</p></div>
+                      <div className="sm:text-right"><p className="text-[9px] uppercase tracking-wider text-slate-400">{chargeTargetLabel}</p><p className="text-xs font-bold text-[#9b752c]">{formatUSD(category.expenses.reduce((sum, expense) => sum + expense.propertyAmountUsd, 0))}</p></div>
+                    </header>
+                    <div className="charge-scroll overflow-x-auto">
+                      <table className="charge-expense-table w-full min-w-[600px] text-left text-xs">
+                        <thead className="border-y border-slate-100 bg-white text-[9px] font-bold uppercase tracking-[.12em] text-slate-400">
+                          <tr>
+                            <th className="px-3 py-1.5">Concepto</th>
+                            <th className="px-3 py-1.5 text-right">Total mes</th>
+                            <th className="px-3 py-1.5 text-right">{chargeTargetLabel}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {category.expenses.map((expense) => {
+                            const usdAmount = getExpenseUSD(expense.amount, expense.currency);
+                            return (
+                              <tr key={expense.id}>
+                                <td className="px-3 py-1.5 font-semibold text-slate-800">
+                                  <span className="font-bold text-[#0b1d33]">{expense.conceptName}</span>
+                                  {expense.description ? <span className="text-slate-500 font-normal"> — {expense.description}</span> : null}
+                                </td>
+                                <td className="px-3 py-1.5 text-right font-semibold">{formatUSD(usdAmount)}</td>
+                                <td className="px-3 py-1.5 text-right font-bold text-[#9b752c]">{formatUSD(expense.propertyAmountUsd)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                );
+              })
+            ) : isDynamic ? (
+              <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-slate-500 bg-white">
+                No hay gastos ordinarios registrados para este periodo.
+              </div>
+            ) : (
+              categories.map((category) => {
+                const total = categoryTotal(category);
+                return (
+                  <section key={category.id} className="charge-category overflow-hidden rounded-xl border border-slate-200 break-inside-avoid">
+                    <header className="grid gap-2 bg-[#f8f6f1] p-3 sm:grid-cols-[100px_1fr_auto_auto] sm:items-center">
+                      <p className="font-mono text-[10px] font-bold text-[#9b752c]">{category.id}</p>
+                      <div><h3 className="font-semibold text-xs text-slate-800">{category.name}</h3></div>
+                      <div className="sm:text-right"><p className="text-[9px] uppercase tracking-wider text-slate-400">Total mes</p><p className="text-xs font-bold">{formatUSD(total)}</p></div>
+                      <div className="sm:text-right"><p className="text-[9px] uppercase tracking-wider text-slate-400">{chargeTargetLabel}</p><p className="text-xs font-bold text-[#9b752c]">{formatUSD(propertyShare(total))}</p></div>
+                    </header>
+                    <div className="charge-scroll overflow-x-auto">
+                      <table className="charge-expense-table w-full min-w-[600px] text-left text-xs">
+                        <thead className="border-y border-slate-100 bg-white text-[9px] font-bold uppercase tracking-[.12em] text-slate-400">
+                          <tr>
+                            <th className="px-3 py-1.5">Concepto</th>
+                            <th className="px-3 py-1.5 text-right">Total mes</th>
+                            <th className="px-3 py-1.5 text-right">{chargeTargetLabel}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {category.expenses.map((expense) => (
+                            <tr key={expense.id}>
+                              <td className="px-3 py-1.5 font-semibold text-slate-800">{expense.description}</td>
+                              <td className="px-3 py-1.5 text-right font-semibold">{formatUSD(expense.monthlyTotal)}</td>
+                              <td className="px-3 py-1.5 text-right font-bold text-[#9b752c]">{formatUSD(propertyShare(expense.monthlyTotal))}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                );
+              })
+            )}
+          </div>
+        </section>
+
+        {/* Dynamic Components/Special Funds (Requirement 1) */}
+        {isDynamic && notice.components && notice.components.length > 0 && (
+          <section className="charge-section mt-5">
+            <div className="flex items-start gap-2.5">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#f1eadb] text-[#9b752c]"><Landmark size={16} /></span>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[.16em] text-[#9b752c]">02 · Fondo de reserva, cuotas y otros</p>
+                <p className="text-xs text-slate-500">Aportes a fondo de reserva y otros conceptos adicionales al gasto ordinario.</p>
+              </div>
+            </div>
+            <div className="mt-3.5 space-y-3">
+              <section className="charge-category overflow-hidden rounded-xl border border-slate-200 break-inside-avoid">
+                <div className="charge-scroll overflow-x-auto">
+                  <table className="charge-expense-table w-full min-w-[600px] text-left text-xs">
+                    <thead className="border-b border-slate-100 bg-[#fbfaf7] text-[9px] font-bold uppercase tracking-[.12em] text-slate-400">
+                      <tr>
+                        <th className="px-3 py-2">Fondo / Componente</th>
+                        <th className="px-3 py-2">Tipo</th>
+                        <th className="px-3 py-2 text-right">Total Comunidad</th>
+                        <th className="px-3 py-2 text-right">{chargeTargetLabel}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {notice.components.map((c) => {
+                        return (
+                          <tr key={c.id}>
+                            <td className="px-3 py-1.5 font-semibold text-slate-800">{c.label}</td>
+                            <td className="px-3 py-1.5 font-mono text-[10px] text-slate-400">{c.type}</td>
+                            <td className="px-3 py-1.5 text-right font-semibold text-slate-700">{formatUSD(c.amountVes / dynamicBcvRate)}</td>
+                            <td className="px-3 py-1.5 text-right font-bold text-[#9b752c]">{formatUSD(c.propertyAmountUsd)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </section>
+        )}
+
+        {/* Totales Resumidos del Periodo */}
+        <section className="charge-totals mt-3.5 grid gap-3 sm:grid-cols-2 break-inside-avoid">
+          <div className="rounded-xl border border-[#d8c28e] bg-[#faf6ec] p-3 text-[#0b1d33]">
+            <p className="text-[9px] font-bold uppercase tracking-[.14em] text-[#85631f]">{chargeTargetLabel}</p>
+            <p className="mt-1 text-lg font-bold text-[#8c6b28]">
+              {isDynamic ? formatUSD(isCommunityScope ? Number(notice.totalExpensesVes ?? ordinaryPropertyTotal) / dynamicBcvRate : (notice.expenses ?? []).reduce((sum, expense) => sum + expense.propertyAmountUsd, 0)) : formatUSD(grossPropertyTotal)}
+            </p>
+            <p className="mt-0.5 text-[10px] text-[#85631f]">
+              {isDynamic ? `Ref: ${formatVES(ordinaryPropertyTotal)}` : 'Cuota asignada'}
+            </p>
+          </div>
+          <div className="rounded-xl bg-[#071a33] p-3 text-white">
+            <p className="text-[9px] font-bold uppercase tracking-[.14em] text-[#f0cf77]">Monto a pagar</p>
+            <p className="mt-1 text-lg font-bold text-[#f0cf77]">{formatUSD(propertyPayable)}</p>
+            <p className="mt-0.5 text-[10px] text-white/55">
+              <span>Ref: {formatVES(propertyPayableVES)}</span>
+            </p>
+          </div>
+        </section>
+
+        {/* Cuentas Receptoras */}
+        <section className="mt-4 border-t border-slate-100 pt-4 break-inside-avoid">
+          <div className="flex items-center gap-2">
+            <Landmark className="text-[#9b752c]" size={18} />
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[.14em] text-[#9b752c]">Datos de pago</p>
+              <p className="text-xs text-slate-500">Realiza tu depósito y repórtalo en el portal de propietarios.</p>
+            </div>
+          </div>
+          
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {/* Transferencias */}
+            <div className="rounded-xl bg-[#fbfaf7] border border-slate-200/60 p-4">
+              <p className="font-bold text-xs text-[#0b1d33] mb-2.5">Transferencia Bancaria</p>
+              {community?.bankAccounts && community.bankAccounts.length > 0 ? (
+                <div className="space-y-3.5">
+                  {community.bankAccounts.slice(0, 2).map((b) => (
+                    <dl key={b.id} className="space-y-1 text-xs">
+                      <div className="flex justify-between"><dt className="text-slate-400">Banco:</dt><dd className="font-semibold text-slate-700">{b.bankName}</dd></div>
+                      <div className="flex justify-between"><dt className="text-slate-400">Cuenta Corriente:</dt><dd className="font-mono text-slate-800 font-bold select-all">{b.accountNumber}</dd></div>
+                      <div className="flex justify-between"><dt className="text-slate-400">Titular:</dt><dd className="font-semibold text-slate-700 truncate max-w-[170px]">{b.holder}</dd></div>
+                      <div className="flex justify-between"><dt className="text-slate-400">Cédula / RIF:</dt><dd className="font-semibold text-slate-700">{b.holderRif}</dd></div>
+                    </dl>
+                  ))}
+                </div>
+              ) : isDynamic ? (
+                <p className="text-xs text-slate-500">No hay cuentas bancarias activas registradas.</p>
+              ) : (
+                <dl className="space-y-1 text-xs">
+                  <div className="flex justify-between"><dt className="text-slate-400">Banco:</dt><dd className="font-semibold text-slate-700">Banesco · 0134</dd></div>
+                  <div className="flex justify-between"><dt className="text-slate-400">Cuenta Corriente:</dt><dd className="font-mono text-slate-800 font-bold select-all">0134-0028-45-0281047691</dd></div>
+                  <div className="flex justify-between"><dt className="text-slate-400">Titular:</dt><dd className="font-semibold text-slate-700">Condominio Caribbean Marina</dd></div>
+                  <div className="flex justify-between"><dt className="text-slate-400">RIF:</dt><dd className="font-semibold text-slate-700">{communityRif || 'J-41234567-8'}</dd></div>
+                </dl>
+              )}
+            </div>
+
+            {/* Pago Móvil */}
+            <div className="rounded-xl bg-[#fbfaf7] border border-slate-200/60 p-4">
+              <div className="flex items-center gap-1.5 mb-2.5">
+                <Smartphone size={15} className="text-[#9b752c]" />
+                <p className="font-bold text-xs text-[#0b1d33]">Pago Móvil Interbancario</p>
+              </div>
+              {community?.paymentMethods && community.paymentMethods.some(p => p.type === 'MOBILE_PAYMENT') ? (
+                <div className="space-y-3.5">
+                  {community.paymentMethods.filter(p => p.type === 'MOBILE_PAYMENT').slice(0, 2).map((p) => (
+                    <dl key={p.id} className="space-y-1 text-xs">
+                      <div className="flex justify-between"><dt className="text-slate-400">Banco / Destino:</dt><dd className="font-semibold text-slate-700">{p.label}</dd></div>
+                      <div className="flex justify-between"><dt className="text-slate-400">Teléfono:</dt><dd className="font-semibold text-slate-800 font-bold select-all">{p.mobilePhone}</dd></div>
+                      <div className="flex justify-between"><dt className="text-slate-400">Cédula / RIF:</dt><dd className="font-semibold text-slate-700">{p.mobileDocument}</dd></div>
+                    </dl>
+                  ))}
+                </div>
+              ) : isDynamic ? (
+                <p className="text-xs text-slate-500">No hay métodos de pago móvil activos registrados.</p>
+              ) : (
+                <dl className="space-y-1 text-xs">
+                  <div className="flex justify-between"><dt className="text-slate-400">Banco:</dt><dd className="font-semibold text-slate-700">Banesco · 0134</dd></div>
+                  <div className="flex justify-between"><dt className="text-slate-400">Teléfono:</dt><dd className="font-semibold text-slate-800 font-bold select-all">0414-555-0182</dd></div>
+                  <div className="flex justify-between"><dt className="text-slate-400">RIF / Cédula:</dt><dd className="font-semibold text-slate-700">{communityRif || 'J-41234567-8'}</dd></div>
+                </dl>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <footer className="mt-6 flex flex-col gap-4 border-t border-slate-200 pt-5 text-center sm:flex-row sm:items-end sm:justify-between sm:text-left break-inside-avoid text-[11px] text-slate-400">
+          <div>
+            <div className="inline-flex items-center gap-1.5">
+              <span className="flex h-6 w-6 items-center justify-center rounded bg-[#071a33] text-[10px] font-black text-[#f0cf77]">C</span>
+              <span className="text-sm font-black tracking-[.18em] text-[#0b1d33]">CASA</span>
+            </div>
+            <p className="mt-1 font-semibold text-slate-500">Central de Administración y Servicios Automatizados · Aviso emitido digitalmente</p>
+          </div>
+          <div className="sm:text-right">
+            <p className="font-mono text-[10px]">{notice?.id || 'AC-2026-07-B402'}</p>
+          </div>
+        </footer>
       </div>
-      <div className="relative mt-7 grid gap-3 border-t border-white/10 pt-6 text-sm sm:grid-cols-4 print:border-slate-200">
-        <div><p className="text-xs text-white/45 print:text-slate-400">Propietario</p><p className="mt-1 font-semibold">Alejandro Mendoza R.</p></div>
-        <div><p className="text-xs text-white/45 print:text-slate-400">Inmueble</p><p className="mt-1 font-semibold">Torre B · Apto. B-402</p></div>
-        <div><p className="text-xs text-white/45 print:text-slate-400">Alícuota</p><p className="mt-1 font-semibold">{aliquot.toFixed(4).replace('.', ',')}%</p></div>
-        <div><p className="text-xs text-white/45 print:text-slate-400">Fecha de vencimiento</p><p className="mt-1 font-semibold text-[#f0cf77] print:text-[#9b752c]">31 de julio de 2026</p></div>
-      </div>
-    </header>
 
-    <div className="p-6 sm:p-9 print:p-0 print:pt-6">
-      <section className="charge-section mt-3">
-        <div className="flex items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f1eadb] text-[#9b752c]"><ReceiptText size={19} /></span><div><p className="text-xs font-bold uppercase tracking-[.16em] text-[#9b752c]">01 · Gastos ordinarios</p><h2 className="mt-1 text-xl font-semibold">¿En qué se utilizó el dinero?</h2><p className="mt-1 text-sm leading-6 text-slate-500">Cada gasto conserva su categoría, proveedor, soporte y cálculo para el inmueble.</p></div></div>
-        <div className="mt-5 space-y-5">{categories.map(category => {
-          const total = categoryTotal(category);
-          return <section key={category.id} className="charge-category overflow-hidden rounded-2xl border border-slate-200 break-inside-avoid">
-            <header className="grid gap-4 bg-[#f8f6f1] p-4 sm:grid-cols-[110px_1fr_auto_auto] sm:items-center">
-              <p className="font-mono text-xs font-bold text-[#9b752c]">{category.id}</p>
-              <div><h3 className="font-semibold">{category.name}</h3><p className="mt-1 text-xs leading-5 text-slate-500">{category.description}</p></div>
-              <div className="sm:text-right"><p className="text-[10px] uppercase tracking-wider text-slate-400">Total categoría</p><p className="mt-1 text-sm font-bold">{formatUSD(total)}</p></div>
-              <div className="sm:text-right"><p className="text-[10px] uppercase tracking-wider text-slate-400">Tu inmueble</p><p className="mt-1 text-sm font-bold text-[#9b752c]">{formatUSD(propertyShare(total))}</p></div>
-            </header>
-            <div className="charge-scroll overflow-x-auto"><table className="charge-expense-table w-full min-w-[650px] text-left text-xs"><thead className="border-y border-slate-100 bg-white text-[10px] font-bold uppercase tracking-[.12em] text-slate-400"><tr><th className="px-4 py-3">ID</th><th className="px-4 py-3">Categoría</th><th className="px-4 py-3">Descripción</th><th className="px-4 py-3 text-right">Total mes</th><th className="px-4 py-3 text-right">B-402</th></tr></thead><tbody className="divide-y divide-slate-100">{category.expenses.map(expense => <tr key={expense.id}><td className="px-4 py-3 font-mono text-slate-500">{expense.id}</td><td className="px-4 py-3 font-mono text-slate-500">{expense.categoryId}</td><td className="px-4 py-3 font-semibold">{expense.description}</td><td className="px-4 py-3 text-right font-semibold">{formatUSD(expense.monthlyTotal)}</td><td className="px-4 py-3 text-right font-bold text-[#9b752c]">{formatUSD(propertyShare(expense.monthlyTotal))}</td></tr>)}</tbody><tfoot className="border-t border-slate-200 bg-[#fbfaf7] font-bold"><tr><td colSpan={3} className="px-4 py-3 text-right">Subtotal {category.name}</td><td className="px-4 py-3 text-right">{formatUSD(total)}</td><td className="px-4 py-3 text-right text-[#9b752c]">{formatUSD(propertyShare(total))}</td></tr></tfoot></table></div>
-          </section>;
-        })}</div>
-        <div className="mt-4 flex flex-col gap-3 rounded-2xl bg-[#071a33] p-5 text-white sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs text-white/50">Total de gastos ordinarios de la comunidad</p><p className="mt-1 text-xl font-semibold">{formatUSD(ordinaryTotal)}</p></div><div className="sm:text-right"><p className="text-xs text-white/50">Participación del inmueble · {aliquot.toFixed(4).replace('.', ',')}%</p><p className="mt-1 text-xl font-semibold text-[#f0cf77]">{formatUSD(ordinaryPropertyTotal)}</p></div></div>
-      </section>
-
-      <section className="charge-section mt-9 break-inside-avoid">
-        <p className="text-xs font-bold uppercase tracking-[.16em] text-[#9b752c]">02 · Fondos, provisiones y cuotas especiales</p>
-        <h2 className="mt-1 text-xl font-semibold">Conceptos adicionales del período</h2>
-        <div className="charge-scroll mt-4 overflow-x-auto rounded-2xl border border-slate-200"><table className="charge-adjustment-table w-full min-w-[760px] text-left text-sm"><thead className="bg-[#f8f6f1] text-[10px] font-bold uppercase tracking-[.12em] text-slate-400"><tr><th className="px-4 py-3">ID</th><th className="px-4 py-3">Concepto</th><th className="px-4 py-3">Descripción</th><th className="px-4 py-3 text-right">Comunidad</th><th className="px-4 py-3 text-right">Tu inmueble</th></tr></thead><tbody className="divide-y divide-slate-100">{appliedAdjustments.map(item => <tr key={item.id}><td className="px-4 py-4 font-mono text-xs">{item.id}</td><td className="px-4 py-4 font-semibold">{item.label}</td><td className="px-4 py-4 text-xs leading-5">{item.description}</td><td className="px-4 py-4 text-right font-semibold">{formatUSD(item.communityAmount)}</td><td className="px-4 py-4 text-right font-bold text-[#9b752c]">{formatUSD(item.propertyAmount)}</td></tr>)}</tbody></table></div>
-      </section>
-
-      <section className="charge-totals mt-4 grid gap-3 sm:grid-cols-2 break-inside-avoid">
-        <div className="rounded-2xl bg-[#071a33] p-5 text-white">
-          <p className="text-xs font-bold uppercase tracking-[.14em] text-[#f0cf77]">Total a pagar por la comunidad</p>
-          <p className="mt-2 text-3xl font-semibold text-[#f0cf77]">{formatUSD(noticeTotal)}</p>
-          <p className="mt-2 text-xs text-white/50">{formatUSD(ordinaryTotal)} en gastos + {formatUSD(adjustmentsTotal)} en fondos y cuotas aplicables.</p>
-        </div>
-        <div className="rounded-2xl bg-[#f1eadb] p-5 text-[#071a33]">
-          <p className="text-xs font-bold uppercase tracking-[.14em] text-[#85631f]">Total asignado al inmueble</p>
-          <p className="mt-2 text-3xl font-semibold">{formatUSD(grossPropertyTotal)}</p>
-          <p className="mt-2 text-xs text-[#85631f]">Apartamento B-402 · alícuota {aliquot.toFixed(4).replace('.', ',')}% · antes de créditos e ingresos.</p>
-        </div>
-      </section>
-
-      <section className="charge-section mt-9 break-inside-avoid">
-        <p className="text-xs font-bold uppercase tracking-[.16em] text-[#9b752c]">03 · Créditos e ingresos</p>
-        <h2 className="mt-1 text-xl font-semibold">Valores aplicados a favor del propietario</h2>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">{appliedCredits.map(item => <div key={item.id} className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><div className="flex items-center justify-between gap-3"><p className="font-semibold text-emerald-900">{item.label}</p><p className="font-bold text-emerald-800">{formatUSD(item.amount)}</p></div><p className="mt-2 text-xs leading-5 text-emerald-800/70">{item.id} · {item.description}</p></div>)}</div>
-      </section>
-
-      <section className="mt-9 grid gap-5 lg:grid-cols-[1fr_.8fr] break-inside-avoid">
-        <div className="rounded-2xl border border-slate-200 p-5"><div className="flex items-center gap-3"><Building2 className="text-[#9b752c]" size={20} /><h2 className="font-semibold">Cálculo del inmueble</h2></div><dl className="mt-5 space-y-3 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-500">Gastos ordinarios por alícuota</dt><dd className="font-semibold">{formatUSD(ordinaryPropertyTotal)}</dd></div><div className="flex justify-between gap-4"><dt className="text-slate-500">Fondos, provisiones y cuotas</dt><dd className="font-semibold">+ {formatUSD(propertyAdjustmentsTotal)}</dd></div><div className="flex justify-between gap-4"><dt className="text-slate-500">Subtotal bruto del inmueble</dt><dd className="font-semibold">{formatUSD(grossPropertyTotal)}</dd></div><div className="flex justify-between gap-4 text-emerald-700"><dt>Créditos e ingresos aplicados</dt><dd className="font-semibold">− {formatUSD(Math.abs(creditsTotal))}</dd></div><div className="border-t border-slate-200 pt-3 text-xs leading-5 text-slate-400">Fórmula: total general distribuible × 1,2846%, menos créditos e ingresos aprobados a favor del inmueble.</div></dl></div>
-        <div className="rounded-2xl bg-[#071a33] p-6 text-white"><p className="text-xs font-bold uppercase tracking-[.15em] text-[#f0cf77]">Monto total a pagar</p><p className="mt-3 text-4xl font-semibold tracking-[-.04em] text-[#f0cf77]">{formatUSD(propertyPayable)}</p><p className="mt-3 text-sm text-white/55">Apartamento B-402 · vence 31/07/2026</p><div className="mt-5 rounded-xl bg-white/[.06] p-3 text-xs leading-5 text-white/65"><p>Equivalente: <strong className="text-white">{formatVES(propertyPayableVES)}</strong></p><p className="mt-1">Tasa BCV aplicada: <strong className="text-white">{bcvRate.toFixed(4).replace('.', ',')} Bs/USD</strong> · referencia {bcvRateDate}.</p></div></div>
-      </section>
-
-      <section className="mt-9 border-t border-slate-200 pt-8 break-inside-avoid">
-        <div className="flex items-center gap-3"><Landmark className="text-[#9b752c]" size={21} /><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#9b752c]">Datos de pago</p><h2 className="mt-1 text-xl font-semibold">Cuenta receptora del condominio</h2></div></div>
-        <div className="mt-5 grid gap-4 md:grid-cols-2"><div className="rounded-2xl bg-[#f8f6f1] p-5"><p className="font-semibold">Transferencia bancaria</p><dl className="mt-4 space-y-2 text-sm"><div className="flex justify-between gap-3"><dt className="text-slate-400">Banco</dt><dd className="font-semibold">Banesco · 0134</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-400">Cuenta corriente</dt><dd className="font-mono text-xs font-semibold">0134-0028-45-0281047691</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-400">Titular</dt><dd className="text-right font-semibold">Condominio Caribbean Marina</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-400">RIF</dt><dd className="font-semibold">J-41234567-8</dd></div></dl></div><div className="rounded-2xl bg-[#f8f6f1] p-5"><div className="flex items-center gap-2"><Smartphone size={18} className="text-[#9b752c]" /><p className="font-semibold">Pago móvil</p></div><dl className="mt-4 space-y-2 text-sm"><div className="flex justify-between gap-3"><dt className="text-slate-400">Banco</dt><dd className="font-semibold">Banesco · 0134</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-400">Teléfono</dt><dd className="font-semibold">0414-555-0182</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-400">Documento</dt><dd className="font-semibold">J-41234567-8</dd></div></dl></div></div>
-        <div className="mt-4 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900"><AlertCircle className="mt-0.5 shrink-0" size={18} /><p>Después de realizar el pago, repórtalo en CASA indicando la referencia bancaria. El saldo cambiará cuando la administración confirme la conciliación.</p></div>
-      </section>
-
-      <footer className="mt-10 flex flex-col gap-5 border-t border-slate-200 pt-7 text-center sm:flex-row sm:items-end sm:justify-between sm:text-left break-inside-avoid">
-        <div><div className="inline-flex items-center gap-2"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#071a33] text-xs font-black text-[#f0cf77]">C</span><span className="text-lg font-black tracking-[.18em]">CASA</span></div><p className="mt-2 text-xs font-semibold text-slate-500">Central de Administración y Servicios Automatizados</p><p className="mt-1 text-xs text-[#9b752c]">Toda tu comunidad. Un solo sistema.</p></div><div className="text-xs leading-5 text-slate-400"><div className="flex items-center justify-center gap-2 sm:justify-end"><CheckCircle2 size={14} className="text-emerald-600" />Aviso emitido digitalmente el 19/07/2026</div><p className="mt-1">Identificador verificable: AC-2026-07-B402</p></div>
-      </footer>
-    </div>
-
-    <button onClick={() => window.print()} className="no-print fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-[#071a33] px-5 py-3 text-sm font-bold text-white shadow-2xl"><Printer size={17} />Imprimir aviso</button>
-  </article>;
+      <button onClick={() => window.print()} className="no-print fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-[#071a33] px-5 py-3 text-sm font-bold text-white shadow-2xl hover:bg-[#14365d] transition cursor-pointer">
+        <Printer size={17} /> Imprimir aviso
+      </button>
+    </article>
+  );
 }

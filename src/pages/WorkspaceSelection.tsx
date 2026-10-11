@@ -4,6 +4,7 @@ import {
   ArrowRight,
   BriefcaseBusiness,
   Building2,
+  Construction,
   LogOut,
 } from 'lucide-react';
 import { workspaceCatalog } from '../config/workspaceCatalog';
@@ -15,7 +16,7 @@ export default function WorkspaceSelection() {
   const context = StaffSession.context();
   const user = StaffSession.user();
 
-  const availableWorkspaces = useMemo(() => {
+  const assignedWorkspaces = useMemo(() => {
     const granted = context?.workspaces ?? [];
     return workspaceCatalog.filter(
       (workspace) => granted.includes('*') || granted.includes(workspace.code),
@@ -67,7 +68,7 @@ export default function WorkspaceSelection() {
           </p>
         </section>
 
-        {availableWorkspaces.length === 0 ? (
+        {assignedWorkspaces.length === 0 ? (
           <div className="mx-auto mt-10 max-w-xl rounded-[2rem] border border-[#071a33]/10 bg-white p-8 text-center shadow-sm">
             <Building2 className="mx-auto text-[#a37b35]" size={30} />
             <h2 className="mt-4 text-xl font-semibold">
@@ -81,21 +82,33 @@ export default function WorkspaceSelection() {
           </div>
         ) : (
           <div className="mx-auto mt-10 grid max-w-5xl gap-4 md:grid-cols-2">
-            {availableWorkspaces.map((workspace) => (
+            {assignedWorkspaces.map((workspace) => (
               <button
                 key={workspace.code}
-                onClick={() => chooseWorkspace(workspace.code)}
-                className="group rounded-[1.75rem] border border-[#071a33]/10 bg-white p-6 text-left shadow-[0_16px_50px_rgba(7,26,51,.06)] transition hover:-translate-y-1 hover:border-[#b08a3c]/50 hover:shadow-[0_24px_70px_rgba(7,26,51,.10)]"
+                onClick={() => workspace.enabled && chooseWorkspace(workspace.code)}
+                disabled={!workspace.enabled}
+                aria-label={`${workspace.label}${workspace.enabled ? '' : ': próximamente'}`}
+                className={`group relative overflow-hidden rounded-[1.75rem] border border-[#071a33]/10 bg-white p-6 text-left shadow-[0_16px_50px_rgba(7,26,51,.06)] transition ${workspace.enabled ? 'hover:-translate-y-1 hover:border-[#b08a3c]/50 hover:shadow-[0_24px_70px_rgba(7,26,51,.10)]' : 'cursor-not-allowed opacity-75'}`}
               >
+                {!workspace.enabled && (
+                  <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+                    <span className="flex w-[125%] -rotate-[18deg] items-center justify-center gap-2 bg-[#071a33]/90 px-4 py-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#e3bf72] shadow-lg">
+                      <Construction size={14} /> Próximamente · En construcción
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#071a33] text-[#e3bf72]">
                     <BriefcaseBusiness size={22} />
                   </div>
-                  <ArrowRight className="text-slate-300 transition group-hover:translate-x-1 group-hover:text-[#a37b35]" />
+                  {workspace.enabled ? <ArrowRight className="text-slate-300 transition group-hover:translate-x-1 group-hover:text-[#a37b35]" /> : <Construction className="text-slate-300" size={21} />}
                 </div>
                 <h2 className="mt-6 text-xl font-semibold">{workspace.label}</h2>
                 <p className="mt-2 text-sm leading-6 text-slate-500">
                   {workspace.description}
+                </p>
+                <p className={`mt-4 text-xs font-bold uppercase tracking-[0.16em] ${workspace.enabled ? 'text-emerald-700' : 'text-slate-400'}`}>
+                  {workspace.enabled ? 'Disponible para trabajar' : 'Disponible próximamente'}
                 </p>
               </button>
             ))}

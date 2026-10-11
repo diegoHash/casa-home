@@ -15,6 +15,38 @@ export interface StageValidation {
   requirements: StageRequirement[];
 }
 
+export interface InitializationCheck {
+  id: string;
+  order: number;
+  label: string;
+  detail: string;
+  status: 'complete' | 'pending' | 'warning';
+  evidence: string;
+}
+
+export function resolveInitializationChecks(onboardingCase: OnboardingCase, client?: PlatformClient | null): InitializationCheck[] {
+  let coreState: ReturnType<typeof CoreRepository.load> | null = null;
+  try { coreState = CoreRepository.load(); } catch { /* surface missing data as pending */ }
+  const community = coreState?.communities.find(c => c.clientId === onboardingCase.clientId || c.id === client?.communityId || c.id === `community_${onboardingCase.clientId}`);
+  const communityId = community?.id ?? client?.communityId ?? `community_${onboardingCase.clientId}`;
+  const properties = coreState?.properties.filter(p => p.communityId === communityId) ?? [];
+  const people = coreState?.communityPeople.filter(p => p.communityId === communityId) ?? [];
+  const banks = coreState?.bankAccounts.filter(b => b.communityId === communityId && b.active) ?? [];
+  const methods = coreState?.paymentMethods.filter(p => p.communityId === communityId && p.active) ?? [];
+  const hasCutover = Boolean(onboardingCase.cutoverDate && Number.isFinite(Date.parse(onboardingCase.cutoverDate)));
+  const hasUnits = properties.length > 0;
+  const hasPeople = people.length > 0;
+  return [
+    { id: 'structure', order: 1, label: 'Estructura inmobiliaria', detail: 'Apartamentos, unidades y códigos deben existir en la comunidad.', status: hasUnits ? 'complete' : 'pending', evidence: hasUnits ? `${properties.length} unidades detectadas` : 'No hay unidades reales detectadas' },
+    { id: 'people', order: 2, label: 'Propietarios y relaciones', detail: 'Cada saldo debe poder relacionarse con un propietario y una unidad.', status: hasPeople ? 'complete' : 'pending', evidence: hasPeople ? `${people.length} relaciones detectadas` : 'No hay propietarios relacionados' },
+    { id: 'treasury', order: 3, label: 'Bancos y métodos de pago', detail: 'Configura primero las cuentas donde se registrarán saldos y pagos.', status: banks.length > 0 && methods.length > 0 ? 'complete' : banks.length > 0 || methods.length > 0 ? 'warning' : 'pending', evidence: `${banks.length} bancos · ${methods.length} métodos` },
+    { id: 'receivables', order: 4, label: 'Avisos, deudas y saldos a favor', detail: 'Importa avisos y pagos antes de calcular el saldo final por apartamento.', status: 'pending', evidence: 'Pendiente de carga y aplicación' },
+    { id: 'payables', order: 5, label: 'Cuentas por pagar', detail: 'Registra proveedores y documentos pendientes al día de corte.', status: 'pending', evidence: 'Pendiente de carga' },
+    { id: 'cutover', order: 6, label: 'Corte y conciliación', detail: 'Define la fecha de cierre legacy y concilia auxiliares contra contabilidad.', status: hasCutover ? 'complete' : 'pending', evidence: hasCutover ? `Corte: ${onboardingCase.cutoverDate}` : 'Fecha de corte pendiente' },
+    { id: 'opening', order: 7, label: 'Asiento de apertura', detail: 'Solo se genera cuando los saldos auxiliares y contables coinciden.', status: 'pending', evidence: 'Se habilita después de la conciliación' },
+  ];
+}
+
 function requirement(id: string, label: string, detail: string, passed: boolean): StageRequirement {
   return { id, label, detail, passed };
 }
@@ -130,8 +162,6 @@ export function validateOnboardingStage(
   client: PlatformClient,
 ): StageValidation {
   const verifiedBatches = onboardingCase.batches.filter(batch => ['validated', 'imported'].includes(batch.status));
-  const allBatchesImported = onboardingCase.batches.length > 0
-    && onboardingCase.batches.every(batch => batch.status === 'imported');
   const openCritical = onboardingCase.findings.filter(finding => finding.status === 'open' && finding.severity === 'critical');
   const openWarnings = onboardingCase.findings.filter(finding => finding.status === 'open' && finding.severity === 'warning');
 
@@ -140,7 +170,7 @@ export function validateOnboardingStage(
 
   const hasManualSource = onboardingCase.batches.some(batch => batch.sourceType === 'manual');
   const hasDirectData = primaryUnits > 0 || counts.people > 0;
-  const isManualMode = hasManualSource || (onboardingCase.batches.length === 0 && hasDirectData);
+  const isManualMode = hasManualSource || hasDirectData;
 
   let requirements: StageRequirement[];
 
@@ -153,17 +183,11 @@ export function validateOnboardingStage(
       ];
       break;
     case 'sources':
-      requirements = [
-        requirement('sources-registered', 'Fuente registrada', 'Debe existir al menos una fuente bajo custodia o haberse registrado carga manual.', onboardingCase.batches.length > 0 || isManualMode),
-        requirement('sources-history', 'Ventana histórica válida', 'Las fechas desde/hasta deben estar definidas o indicarse carga manual.', validDateRange(onboardingCase.historicalFrom, onboardingCase.historicalTo) || isManualMode),
-        requirement('sources-processed', 'Extracción validada', 'Al menos un lote debe haber sido validado/importado o registrarse carga manual.', verifiedBatches.length > 0 || isManualMode),
-        requirement('sources-integrity', 'Integridad comprobada', 'Todos los lotes deben tener hash contabilizado o ser levantamiento manual.', isManualMode || (onboardingCase.batches.length > 0 && onboardingCase.batches.every(batch => Boolean(batch.checksum) && batch.tableCount > 0 && batch.rowCount > 0))),
-        requirement('sources-failures', 'Sin lotes fallidos', 'No puede existir una extracción en estado fallido.', !onboardingCase.batches.some(batch => batch.status === 'failed')),
-      ];
+      requirements = [];
       break;
     case 'structure':
       requirements = [
-        requirement('structure-prior', 'Etapas anteriores aprobadas', 'Identidad y fuentes deben estar completadas.', priorStagesCompleted(onboardingCase, stageKey)),
+        requirement('structure-prior', 'Etapas anteriores aprobadas', 'La identidad debe estar completada.', priorStagesCompleted(onboardingCase, stageKey)),
         requirement('structure-import', 'Estructura cargada', 'La estructura debe provenir de un lote o del levantamiento manual directo.', verifiedBatches.length > 0 || isManualMode || primaryUnits > 0),
         requirement('structure-units', 'Universo inmobiliario definido', 'Debe existir al menos un apartamento, townhouse o local comercial.', primaryUnits > 0),
         requirement('structure-findings', 'Sin bloqueos estructurales', 'No puede haber hallazgos críticos abiertos sobre inmuebles, alícuotas, edificios o concesiones.', !hasOpenCritical(onboardingCase, ['estructura', 'inmueble', 'alícuota', 'alicuota', 'edificio', 'concesión', 'concesion'])),
@@ -180,7 +204,6 @@ export function validateOnboardingStage(
     case 'finances':
       requirements = [
         requirement('finances-prior', 'Etapas anteriores aprobadas', 'Personas y relaciones deben estar completadas.', priorStagesCompleted(onboardingCase, stageKey)),
-        requirement('finances-import', 'Historia financiera procesada', 'Todos los lotes registrados deben alcanzarse como importados o carga manual.', allBatchesImported || isManualMode),
         requirement('finances-history', 'Período contable delimitado', 'La ventana histórica debe ser válida o declararse carga manual.', validDateRange(onboardingCase.historicalFrom, onboardingCase.historicalTo) || isManualMode),
         requirement('finances-findings', 'Sin bloqueos financieros', 'Saldos, pagos, avisos y fondos no pueden tener diferencias críticas abiertas.', !hasOpenCritical(onboardingCase, ['financ', 'contab', 'saldo', 'pago', 'aviso', 'fondo', 'cobranza'])),
       ];
@@ -195,19 +218,17 @@ export function validateOnboardingStage(
       break;
     case 'validation':
       requirements = [
-        requirement('validation-prior', 'Ruta previa completada', 'Las seis etapas anteriores deben estar aprobadas.', priorStagesCompleted(onboardingCase, stageKey)),
-        requirement('validation-import', 'Importación / Carga finalizada', 'Todos los lotes registrados deben estar importados o ser carga manual.', allBatchesImported || isManualMode),
+        requirement('validation-prior', 'Ruta previa completada', 'Las cinco etapas anteriores deben estar aprobadas.', priorStagesCompleted(onboardingCase, stageKey)),
         requirement('validation-critical', 'Cero críticos abiertos', 'Todo hallazgo crítico debe estar resuelto.', openCritical.length === 0),
         requirement('validation-warning', 'Advertencias atendidas', 'Cada advertencia debe estar resuelta o aceptada expresamente.', openWarnings.length === 0),
       ];
       break;
     case 'activation':
       requirements = [
-        requirement('activation-prior', 'Expediente aprobado', 'Las siete etapas anteriores deben estar completadas.', priorStagesCompleted(onboardingCase, stageKey)),
+        requirement('activation-prior', 'Expediente aprobado', 'Las seis etapas anteriores deben estar completadas.', priorStagesCompleted(onboardingCase, stageKey)),
         requirement('activation-ready', 'Caso listo para activación', 'La conciliación debe dejar el expediente en estado listo.', onboardingCase.status === 'ready'),
         requirement('activation-cutover', 'Fecha de corte confirmada', 'La salida en vivo debe tener una fecha definida.', Boolean(onboardingCase.cutoverDate) && Number.isFinite(Date.parse(onboardingCase.cutoverDate))),
         requirement('activation-findings', 'Cero asuntos abiertos', 'No puede quedar ningún crítico ni advertencia sin atender.', openCritical.length === 0 && openWarnings.length === 0),
-        requirement('activation-import', 'Fuentes procesadas o cargadas', 'Todos los lotes deben estar importados o ser carga manual.', allBatchesImported || isManualMode),
       ];
       break;
   }

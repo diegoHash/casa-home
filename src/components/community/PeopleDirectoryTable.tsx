@@ -35,7 +35,7 @@ function makeRows(core: CoreSnapshot | null): PersonRow[] {
   });
 }
 
-export function PeopleDirectoryTable({ core }: { core: CoreSnapshot | null }) {
+export function PeopleDirectoryTable({ core, canWrite = false, onEdit, onDeactivate }: { core: CoreSnapshot | null; canWrite?: boolean; onEdit?: (person: PersonRow) => void; onDeactivate?: (person: PersonRow) => void }) {
   const [search, setSearch] = useState('');
   const [relation, setRelation] = useState<RelationFilter>('ALL');
   const [documentType, setDocumentType] = useState('ALL');
@@ -134,6 +134,7 @@ export function PeopleDirectoryTable({ core }: { core: CoreSnapshot | null }) {
         <table className="w-full min-w-[850px] text-left text-sm">
           <thead className="bg-[#071a33] text-white"><tr>
             {['Nombre', 'Documento', 'Relación en la comunidad', 'Correo', 'Teléfono'].map((heading) => <th key={heading} className="px-5 py-4 text-xs uppercase tracking-[0.13em]">{heading}</th>)}
+            {canWrite && <th className="px-5 py-4 text-right text-xs uppercase tracking-[0.13em]">Acciones</th>}
           </tr></thead>
           <tbody>
             {visibleRows.map((person) => <tr key={person.id} className="border-t border-slate-100">
@@ -142,8 +143,9 @@ export function PeopleDirectoryTable({ core }: { core: CoreSnapshot | null }) {
               <td className="px-5 py-4 text-slate-500">{person.relations.join(' / ') || 'Directorio general'}</td>
               <td className="px-5 py-4 text-slate-500">{person.email || '—'}</td>
               <td className="px-5 py-4 text-slate-500">{person.phone || '—'}</td>
+              {canWrite && <td className="px-5 py-4 text-right"><div className="flex justify-end gap-2"><button type="button" onClick={() => onEdit?.(person)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-[#071a33] hover:bg-slate-50">Editar</button><button type="button" onClick={() => onDeactivate?.(person)} className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-50">Retirar</button></div></td>}
             </tr>)}
-            {!visibleRows.length && <tr><td colSpan={5} className="px-5 py-12 text-center text-slate-500">No hay personas que coincidan con los filtros.</td></tr>}
+            {!visibleRows.length && <tr><td colSpan={canWrite ? 6 : 5} className="px-5 py-12 text-center text-slate-500">No hay personas que coincidan con los filtros.</td></tr>}
           </tbody>
         </table>
       </div>

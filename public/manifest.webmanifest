@@ -1,0 +1,17 @@
+{
+  "name": "CASA · Central de Administración y Servicios Automatizados",
+  "short_name": "CASA",
+  "description": "Administración, finanzas, accesos y servicios para comunidades residenciales.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f2e9",
+  "theme_color": "#071a33",
+  "icons": [
+    {
+      "src": "/casa-profile-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

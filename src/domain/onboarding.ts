@@ -93,10 +93,9 @@ export interface OnboardingState {
 
 export const onboardingStageBlueprint: Array<Pick<OnboardingStage, 'key' | 'label' | 'description'>> = [
   { key: 'identity', label: 'Identidad y licencia', description: 'Contrato, RIF, comunidad y responsables.' },
-  { key: 'sources', label: 'Fuentes de información', description: 'Archivos, sistemas anteriores y custodia.' },
   { key: 'structure', label: 'Estructura inmobiliaria', description: 'Edificios, inmuebles, alícuotas y concesiones.' },
   { key: 'people', label: 'Personas y relaciones', description: 'Propiedad, ocupación, junta y personal.' },
-  { key: 'finances', label: 'Historia financiera', description: 'Avisos, pagos, saldos, fondos y ajustes.' },
+  { key: 'finances', label: 'Inicialización financiera', description: 'Corte, historia, saldos, avisos, pagos y apertura contable.' },
   { key: 'operations', label: 'Configuración operativa', description: 'Banca, políticas, permisos y comunicaciones.' },
   { key: 'validation', label: 'Conciliación y validación', description: 'Controles estructurales y financieros.' },
   { key: 'activation', label: 'Activación', description: 'Aprobación, corte, invitaciones y salida en vivo.' },
@@ -109,4 +108,3 @@ export function createOnboardingStages(): OnboardingStage[] {
     completedAt: null,
   }));
 }
-

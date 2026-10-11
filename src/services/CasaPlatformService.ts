@@ -1,8 +1,12 @@
 import axios, { type AxiosRequestConfig } from 'axios';
 import type {
   ClientStanding,
+  ClientLicense,
+  LicensePaymentMethod,
+  LicensePaymentRecord,
   LicenseStatus,
   PlatformClient,
+  PlatformClientDetail,
 } from '../domain/superAdmin';
 import { casaApi, CasaAuthService } from './CasaAuthService';
 import { RootSession } from './RootSession';
@@ -16,6 +20,10 @@ interface ApiLicense {
   periodStart: string;
   periodEnd: string;
   graceUntil: string;
+  graceDays?: number;
+  isTrial?: boolean;
+  trialFrom?: string | null;
+  trialUntil?: string | null;
   lastReconciledAt: string | null;
   revokedAt: string | null;
 }
@@ -48,6 +56,19 @@ interface ApiClient {
       location: { name: string; code: string } | null;
     }>;
   } | null;
+  licenses?: ApiLicense[];
+  licensePayments?: Array<{
+    id: string;
+    licenseId: string;
+    amount: string | number;
+    exchangeRate: string | number;
+    currency: 'USD' | 'VES' | 'EUR';
+    paymentMethod: LicensePaymentMethod;
+    reference: string;
+    paidAt: string;
+    notes: string | null;
+    createdAt: string;
+  }>;
 }
 
 export interface CreatePlatformClientInput {
@@ -128,6 +149,36 @@ export interface CommunityAccessRecord {
   };
 }
 
+export interface PlatformAuditRecord {
+  id: string;
+  communityId: string | null;
+  actorUserId: string | null;
+  requestId: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  detail: string;
+  reason: string | null;
+  before: unknown;
+  after: unknown;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  community: { id: string; name: string; clientId: string } | null;
+  actor: {
+    id: string;
+    email: string;
+    platformRole: string | null;
+    person: {
+      id: string;
+      firstName: string;
+      lastName: string;
+      documentType: string;
+      documentNumber: string;
+    } | null;
+  } | null;
+}
+
 const standingMap: Record<string, ClientStanding> = {
   ONBOARDING: 'onboarding',
   SOLVENT: 'solvent',
@@ -169,6 +220,7 @@ function mapClient(client: ApiClient): PlatformClient {
     joinedAt: client.joinedAt.slice(0, 10),
     lastActivityAt: client.updatedAt,
     license: {
+      id: license.id,
       status: licenseMap[license.status] ?? 'expired',
       autoRenewOnReconciliation: license.autoRenewOnReconciliation,
       monthlyFee: Number(license.monthlyFee),
@@ -176,6 +228,10 @@ function mapClient(client: ApiClient): PlatformClient {
       periodStart: license.periodStart.slice(0, 10),
       periodEnd: license.periodEnd.slice(0, 10),
       graceUntil: license.graceUntil.slice(0, 10),
+      graceDays: license.graceDays ?? 5,
+      isTrial: license.isTrial ?? false,
+      trialFrom: license.trialFrom,
+      trialUntil: license.trialUntil,
       lastReconciledAt: license.lastReconciledAt,
       revokedAt: license.revokedAt,
     },
@@ -195,6 +251,25 @@ function mapClient(client: ApiClient): PlatformClient {
       maximumOccupancy: property.maximumOccupancy,
       braceletQuota: property.braceletQuota,
     })),
+  };
+}
+
+function mapLicense(license: ApiLicense): ClientLicense {
+  return {
+    id: license.id,
+    status: licenseMap[license.status] ?? 'expired',
+    autoRenewOnReconciliation: license.autoRenewOnReconciliation,
+    monthlyFee: Number(license.monthlyFee),
+    currency: (license.currency === 'EUR' || license.currency === 'VES' ? license.currency : 'USD') as ClientLicense['currency'],
+    periodStart: license.periodStart.slice(0, 10),
+    periodEnd: license.periodEnd.slice(0, 10),
+    graceUntil: license.graceUntil.slice(0, 10),
+    graceDays: license.graceDays ?? 5,
+    isTrial: license.isTrial ?? false,
+    trialFrom: license.trialFrom,
+    trialUntil: license.trialUntil,
+    lastReconciledAt: license.lastReconciledAt,
+    revokedAt: license.revokedAt,
   };
 }
 
@@ -285,6 +360,30 @@ export const CasaPlatformService = {
     } satisfies CreatedPlatformClient;
   },
 
+  async getClient(clientId: string): Promise<PlatformClientDetail> {
+    const { data } = await authorizedRequest<ApiClient>({
+      method: 'GET',
+      url: `/platform/clients/${clientId}`,
+    });
+    const client = mapClient(data);
+    return {
+      ...client,
+      licenses: (data.licenses ?? (data.community?.activeLicense ? [data.community.activeLicense] : [])).map(mapLicense),
+      licensePayments: (data.licensePayments ?? []).map((payment): LicensePaymentRecord => ({
+        id: payment.id,
+        licenseId: payment.licenseId,
+        amount: Number(payment.amount),
+        exchangeRate: Number(payment.exchangeRate),
+        currency: payment.currency,
+        paymentMethod: payment.paymentMethod,
+        reference: payment.reference,
+        paidAt: payment.paidAt,
+        notes: payment.notes,
+        createdAt: payment.createdAt,
+      })),
+    };
+  },
+
   async revokeLicense(clientId: string, reason: string) {
     await authorizedRequest({
       method: 'POST',
@@ -297,7 +396,45 @@ export const CasaPlatformService = {
     await authorizedRequest({
       method: 'PATCH',
       url: `/platform/clients/${clientId}/license/auto-renew`,
-      data: { enabled },
+      data: { enabled, reason: enabled ? 'Renovación automática activada desde CASA Control' : 'Renovación automática desactivada desde CASA Control' },
+    });
+  },
+
+  async updateLicenseStatus(clientId: string, status: 'ACTIVE' | 'SUSPENDED', reason: string) {
+    await authorizedRequest({
+      method: 'PATCH',
+      url: `/platform/clients/${clientId}/license/status`,
+      data: { status, reason },
+    });
+  },
+
+  async updateLicenseSettings(clientId: string, input: {
+    autoRenewOnReconciliation?: boolean;
+    isTrial?: boolean;
+    trialFrom?: string;
+    trialUntil?: string;
+    graceDays?: number;
+  }) {
+    await authorizedRequest({
+      method: 'PATCH',
+      url: `/platform/clients/${clientId}/license/settings`,
+      data: input,
+    });
+  },
+
+  async createLicensePayment(clientId: string, input: {
+    amount: number;
+    exchangeRate: number;
+    currency: 'USD' | 'VES' | 'EUR';
+    paymentMethod: LicensePaymentMethod;
+    reference: string;
+    paidAt: string;
+    notes?: string;
+  }) {
+    await authorizedRequest({
+      method: 'POST',
+      url: `/platform/clients/${clientId}/license/payments`,
+      data: input,
     });
   },
 
@@ -333,6 +470,15 @@ export const CasaPlatformService = {
     const { data } = await authorizedRequest<CommunityAccessRecord[]>({
       method: 'GET',
       url: `/platform/clients/${clientId}/access-users`,
+    });
+    return data;
+  },
+
+  async listAuditEvents(communityId?: string) {
+    const { data } = await authorizedRequest<PlatformAuditRecord[]>({
+      method: 'GET',
+      url: '/platform/clients/audit',
+      params: communityId ? { communityId } : undefined,
     });
     return data;
   },
@@ -373,6 +519,19 @@ export const CasaPlatformService = {
       method: 'PATCH',
       url: `/platform/clients/${clientId}/access-users/${accessId}/workspaces`,
       data: { workspaceCodes, reason },
+    });
+    return data;
+  },
+
+  async revokeCommunityAccess(
+    clientId: string,
+    accessId: string,
+    reason: string,
+  ) {
+    const { data } = await authorizedRequest<CommunityAccessRecord>({
+      method: 'POST',
+      url: `/platform/clients/${clientId}/access-users/${accessId}/revoke`,
+      data: { reason },
     });
     return data;
   },

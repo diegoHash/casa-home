@@ -1,18 +1,24 @@
 import axios from 'axios';
 
-const isLocal =
-  window.location.hostname === 'localhost' ||
-  window.location.hostname === '127.0.0.1' ||
-  window.location.hostname.startsWith('192.168.');
-
+/**
+ * ============================================================================
+ * CLIENTE HTTP OFICIAL DE CASA (casaApi)
+ * ============================================================================
+ * `casaApi` es una instancia pre-configurada del cliente de red Axios.
+ *
+ * - ¿Para qué sirve?: Permite que cualquier componente React de la interfaz (casa-home)
+ *   envíe peticiones HTTP (GET, POST, PATCH) al servidor backend NestJS (casa-api).
+ * - Ruta base predeterminada: `http://localhost:3001/v1` en entorno local.
+ * - Parámetros: Tiempo límite de espera de 15 segundos y formato de datos JSON.
+ * ============================================================================
+ */
 const CASA_API_URL =
   import.meta.env.VITE_CASA_API_URL ||
-  (isLocal ? 'http://localhost:3001/v1' : '/v1');
+  '/v1';
 
 export const casaApi = axios.create({
   baseURL: CASA_API_URL,
   timeout: 15_000,
-  headers: { 'Content-Type': 'application/json' },
 });
 
 export interface CasaUser {
@@ -34,6 +40,7 @@ export interface CommunityContext {
   name: string;
   legalName: string;
   rif: string;
+  address?: string;
   status: string;
   roleCode: string;
   relationTypes?: Array<
@@ -82,10 +89,11 @@ export function casaErrorMessage(error: unknown, fallback: string) {
 }
 
 export const CasaAuthService = {
-  async requestPasswordReset(email: string) {
+  async requestPasswordReset(email: string, type?: string) {
     try {
       await casaApi.post('/auth/password-reset/request', {
         email: email.trim().toLowerCase(),
+        type,
       });
       return { success: true as const };
     } catch (error) {

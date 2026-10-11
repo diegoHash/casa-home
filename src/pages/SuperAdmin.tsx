@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Activity,
+  ActivitySquare,
   AlertTriangle,
   ArrowRight,
   Bell,
@@ -20,7 +21,6 @@ import {
   KeyRound,
   Landmark,
   LayoutDashboard,
-  LockKeyhole,
   LogOut,
   Menu,
   MoreHorizontal,
@@ -40,25 +40,25 @@ import OnboardingModule from '../components/onboarding/OnboardingModule';
 import { WorkspacePermissionsTree } from '../components/community/WorkspacePermissionsTree';
 import { workspaceCatalog, workspaceLabel } from '../config/workspaceCatalog';
 import {
-  communityFullAccessScope,
-  inferAccessMode,
-  ownerServiceAgentScopes,
+  explicitScopeCatalog,
   roleCatalog,
   roleLabel,
   scopeLabel,
-  scopesForWorkspaceFull,
-  type AccessMode,
+  normalizeWorkspaceScopes,
+  scopesDefaultsForRole,
+  workspaceDefaultsForRole,
 } from '../config/communityAccessCatalog';
 import type { ClientStanding, LicenseStatus, PlatformClient, SuperAdminState } from '../domain/superAdmin';
 import { platformAudit, platformId, SuperAdminRepository } from '../services/SuperAdminRepository';
 import { ensureCommunityForClient } from '../services/CoreRepository';
 import { ensureOnboardingForClient } from '../services/OnboardingRepository';
 import { RootSession } from '../services/RootSession';
+import MonitoringDashboard from '../components/monitoring/MonitoringDashboard';
 import { CasaAuthService } from '../services/CasaAuthService';
 import { CasaPlatformService } from '../services/CasaPlatformService';
-import type { AccessPersonnelRecord, CommunityAccessRecord } from '../services/CasaPlatformService';
+import type { AccessPersonnelRecord, CommunityAccessRecord, PlatformAuditRecord } from '../services/CasaPlatformService';
 
-type AdminView = 'overview' | 'clients' | 'onboarding' | 'licenses' | 'payments' | 'core' | 'users' | 'audit' | 'settings';
+type AdminView = 'overview' | 'clients' | 'onboarding' | 'licenses' | 'payments' | 'core' | 'users' | 'audit' | 'monitoring' | 'settings';
 
 const money = new Intl.NumberFormat('es-VE', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 const date = new Intl.DateTimeFormat('es-VE', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -119,7 +119,11 @@ export default function SuperAdmin() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [showNewClient, setShowNewClient] = useState(false);
   const [accessClientId, setAccessClientId] = useState<string | null>(null);
-  const [manageAccessClientId, setManageAccessClientId] = useState<string | null>(null);
+  const [manageAccessTarget, setManageAccessTarget] = useState<{
+    clientId: string;
+    accessId?: string;
+  } | null>(null);
+  const [accessReloadKey, setAccessReloadKey] = useState(0);
   const [revokeClientId, setRevokeClientId] = useState<string | null>(null);
   const [reconcilePaymentId, setReconcilePaymentId] = useState<string | null>(null);
   const [toast, setToast] = useState('');
@@ -129,6 +133,7 @@ export default function SuperAdmin() {
     clientId: null,
     section: 'summary',
   });
+  const openClient = (clientId: string) => navigate(`/dashboard/clientes/${clientId}${demoMode ? '?demo=1' : ''}`);
 
   useEffect(() => {
     if (demoMode) SuperAdminRepository.save(state);
@@ -270,7 +275,7 @@ export default function SuperAdmin() {
         await CasaPlatformService.revokeLicense(client.id, reason);
         await reloadRealClients();
         setRevokeClientId(null);
-        setSelectedClientId(client.id);
+        openClient(client.id);
         setToast(`Licencia de ${client.name} revocada.`);
       } catch (error) {
         setPlatformError(
@@ -314,7 +319,7 @@ export default function SuperAdmin() {
         const id = created.clientId;
         await reloadRealClients();
         setShowNewClient(false);
-        setSelectedClientId(id);
+        openClient(id);
         setToast(`${name} fue registrado correctamente.`);
       } catch (error) {
         setPlatformError(
@@ -344,7 +349,7 @@ export default function SuperAdmin() {
     ensureCommunityForClient(client);
     ensureOnboardingForClient(client.id);
     setShowNewClient(false);
-    setSelectedClientId(id);
+    openClient(id);
     setToast(`${name} fue registrado correctamente.`);
   };
 
@@ -374,6 +379,7 @@ export default function SuperAdmin() {
       });
       const client = state.clients.find((item) => item.id === accessClientId);
       setAccessClientId(null);
+      setAccessReloadKey((current) => current + 1);
       setToast(
         `Acceso de personal creado${client ? ` para ${client.name}` : ''}.`,
       );
@@ -400,7 +406,7 @@ export default function SuperAdmin() {
   ) => {
     if (destination.view === 'clients') {
       setView('clients');
-      setSelectedClientId(destination.clientId);
+      openClient(destination.clientId);
       return;
     }
     setCoreDestination({ clientId: destination.clientId, section: destination.section ?? 'summary' });
@@ -409,7 +415,7 @@ export default function SuperAdmin() {
   const menuGroups: Array<{ label: string; items: Array<{ id: AdminView; label: string; icon: typeof LayoutDashboard; count?: number }> }> = [
     { label: 'Control', items: [{ id: 'overview', label: 'Resumen ejecutivo', icon: LayoutDashboard }, { id: 'clients', label: 'Clientes', icon: Building2, count: state.clients.length }, { id: 'onboarding', label: 'Incorporación', icon: ClipboardCheck, count: state.clients.filter(client => client.standing === 'onboarding').length }, { id: 'licenses', label: 'Licencias', icon: KeyRound }, { id: 'payments', label: 'Conciliaciones', icon: Landmark, count: pendingPayments.length }] },
     { label: 'Plataforma', items: [{ id: 'core', label: 'Núcleo CASA', icon: Database }, { id: 'users', label: 'Usuarios y acceso', icon: UsersRound }, { id: 'audit', label: 'Auditoría', icon: FileClock }] },
-    { label: 'Sistema', items: [{ id: 'settings', label: 'Configuración', icon: Settings2 }] },
+    { label: 'Sistema', items: [{ id: 'monitoring', label: 'Monitoreo', icon: ActivitySquare }, { id: 'settings', label: 'Configuración', icon: Settings2 }] },
   ];
 
   return <div className="min-h-screen bg-[#f5f3ee] text-[#071a33]">
@@ -427,19 +433,20 @@ export default function SuperAdmin() {
       <main className="mx-auto max-w-[1600px] px-4 py-7 sm:px-7 lg:px-9 lg:py-9">
         {!demoMode && platformError && <div role="alert" className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-semibold text-rose-700">{platformError}</div>}
         {!demoMode && loadingClients && <div className="mb-6 flex items-center gap-3 rounded-2xl border border-[#071a33]/8 bg-white px-5 py-4 text-sm font-semibold text-slate-500"><span className="h-5 w-5 animate-spin rounded-full border-2 border-[#071a33]/15 border-t-[#b08a3c]" />Sincronizando CASA Control…</div>}
-        {view === 'overview' && <Overview state={state} activeClients={activeClients} atRiskClients={atRiskClients} monthlyRevenue={monthlyRevenue} pendingPayments={pendingPayments.length} onView={openView} onClient={setSelectedClientId} clientName={clientName} />}
-        {view === 'clients' && <ClientsView clients={filteredClients} search={search} setSearch={setSearch} filter={clientFilter} setFilter={setClientFilter} onClient={setSelectedClientId} onNew={() => { setPlatformError(''); setShowNewClient(true); }} />}
+        {view === 'overview' && <Overview state={state} activeClients={activeClients} atRiskClients={atRiskClients} monthlyRevenue={monthlyRevenue} pendingPayments={pendingPayments.length} onView={openView} onClient={openClient} clientName={clientName} />}
+        {view === 'clients' && <ClientsView clients={filteredClients} search={search} setSearch={setSearch} filter={clientFilter} setFilter={setClientFilter} onClient={openClient} onNew={() => { setPlatformError(''); setShowNewClient(true); }} />}
         {view === 'onboarding' && <><SectionHeader eyebrow="Ingreso controlado" title="Incorporación de comunidades" copy="Gobierna cada migración desde la recepción de fuentes hasta la conciliación y activación definitiva." /><OnboardingModule key={state.clients.map(client => client.id).join('|')} clients={state.clients} demoMode={demoMode} onNavigate={openOnboardingDestination} /></>}
-        {view === 'licenses' && <LicensesView clients={state.clients} onClient={setSelectedClientId} onToggle={toggleAutoRenew} onRevoke={(id) => { setPlatformError(''); setRevokeClientId(id); }} />}
-        {view === 'payments' && <PaymentsView state={state} clientName={clientName} onReconcile={setReconcilePaymentId} onClient={setSelectedClientId} />}
-        {view === 'core' && <><SectionHeader eyebrow="Fuente única de información" title="Núcleo multi-condominio" copy="Gestiona la estructura, personas, gobierno, cuentas y expedientes de cada comunidad desde una base coherente." /><CoreModule clientId={coreDestination.clientId} initialSection={coreDestination.section} canWriteTreasury={true} /></>}
+        {view === 'licenses' && <LicensesView clients={state.clients} onClient={openClient} onToggle={toggleAutoRenew} onRevoke={(id) => { setPlatformError(''); setRevokeClientId(id); }} />}
+        {view === 'payments' && <PaymentsView state={state} clientName={clientName} onReconcile={setReconcilePaymentId} onClient={openClient} />}
+        {view === 'core' && <><SectionHeader eyebrow="Fuente única de información" title="Núcleo multi-condominio" copy="Gestiona la estructura, personas, gobierno, cuentas y expedientes de cada comunidad desde una base coherente." /><CoreModule clientId={coreDestination.clientId} initialSection={coreDestination.section} canWriteTreasury={true} onManageAccess={(clientId, accessId) => { setPlatformError(''); setManageAccessTarget({ clientId, accessId }); }} /></>}
         {view === 'users' && (
           <UsersView
             clients={state.clients}
             demoMode={demoMode}
+            reloadKey={accessReloadKey}
             onManageClient={(id) => {
               setPlatformError('');
-              setManageAccessClientId(id);
+              setManageAccessTarget({ clientId: id });
             }}
             onCreateAccess={(id) => {
               setPlatformError('');
@@ -447,17 +454,18 @@ export default function SuperAdmin() {
             }}
           />
         )}
-        {view === 'audit' && <AuditView events={state.audit} />}
+        {view === 'audit' && <AuditView clients={state.clients} demoMode={demoMode} fallbackEvents={state.audit} />}
+        {view === 'monitoring' && <MonitoringDashboard />}
         {view === 'settings' && <SettingsView />}
       </main>
     </div>
 
-    {selectedClient && <ClientDrawer client={selectedClient} payments={state.payments.filter(item => item.clientId === selectedClient.id)} onClose={() => setSelectedClientId(null)} onToggle={() => toggleAutoRenew(selectedClient.id)} onRevoke={() => { setPlatformError(''); setRevokeClientId(selectedClient.id); }} onCreateAccess={() => { setPlatformError(''); setAccessClientId(selectedClient.id); }} onManageAccess={() => { setPlatformError(''); setManageAccessClientId(selectedClient.id); }} />}
+    {selectedClient && <ClientDrawer client={selectedClient} payments={state.payments.filter(item => item.clientId === selectedClient.id)} onClose={() => setSelectedClientId(null)} onToggle={() => toggleAutoRenew(selectedClient.id)} onRevoke={() => { setPlatformError(''); setRevokeClientId(selectedClient.id); }} onCreateAccess={() => { setPlatformError(''); setAccessClientId(selectedClient.id); }} onManageAccess={() => { setPlatformError(''); setManageAccessTarget({ clientId: selectedClient.id }); }} />}
     {showNewClient && <NewClientModal error={platformError} onClose={() => setShowNewClient(false)} onSubmit={createClient} />}
     {revokeClientId && <RevokeModal error={platformError} client={state.clients.find(item => item.id === revokeClientId)!} onClose={() => setRevokeClientId(null)} onSubmit={revokeLicense} />}
     {reconcilePaymentId && <ReconcileModal payment={state.payments.find(item => item.id === reconcilePaymentId)!} client={state.clients.find(item => item.id === state.payments.find(payment => payment.id === reconcilePaymentId)?.clientId)!} onClose={() => setReconcilePaymentId(null)} onConfirm={() => { reconcilePayment(reconcilePaymentId); setReconcilePaymentId(null); }} />}
     {accessClientId && <CommunityAccessModal client={state.clients.find(item => item.id === accessClientId)!} error={platformError} onClose={() => setAccessClientId(null)} onSubmit={createCommunityAccess} />}
-    {manageAccessClientId && <ManageCommunityAccessModal client={state.clients.find(item => item.id === manageAccessClientId)!} onClose={() => setManageAccessClientId(null)} onSaved={(message) => setToast(message)} />}
+    {manageAccessTarget && <ManageCommunityAccessModal client={state.clients.find(item => item.id === manageAccessTarget.clientId)!} initialAccessId={manageAccessTarget.accessId} onClose={() => setManageAccessTarget(null)} onSaved={(message) => { setToast(message); setAccessReloadKey((current) => current + 1); }} />}
     {toast && <div className="fixed bottom-5 left-1/2 z-[150] flex -translate-x-1/2 items-center gap-3 rounded-full bg-[#071a33] px-5 py-3 text-sm font-semibold text-white shadow-2xl"><CheckCircle2 size={18} className="text-[#e4c26f]" />{toast}</div>}
   </div>;
 }
@@ -495,11 +503,13 @@ function PaymentsView({ state, clientName, onReconcile, onClient }: { state: Sup
 function UsersView({
   clients,
   demoMode,
+  reloadKey,
   onManageClient,
   onCreateAccess,
 }: {
   clients: PlatformClient[];
   demoMode: boolean;
+  reloadKey: number;
   onManageClient: (clientId: string) => void;
   onCreateAccess: (clientId: string) => void;
 }) {
@@ -595,10 +605,24 @@ function UsersView({
       setLoading(true);
       setError('');
       const results = await Promise.allSettled(
-        clients.map(async (client) => ({
-          client,
-          accesses: await CasaPlatformService.listCommunityAccess(client.id),
-        })),
+        clients.map(async (client) => {
+          const [accessesResult, personnelResult] = await Promise.allSettled([
+            CasaPlatformService.listCommunityAccess(client.id),
+            CasaPlatformService.listAccessPersonnel(client.id),
+          ]);
+          const accesses = accessesResult.status === 'fulfilled'
+            ? accessesResult.value
+            : [];
+          const personnelAccesses = personnelResult.status === 'fulfilled'
+            ? personnelResult.value.flatMap((item) => item.access ? [item.access] : [])
+            : [];
+          const known = new Set(accesses.map((access) => access.id));
+          return {
+            client,
+            accesses: [...accesses, ...personnelAccesses.filter((access) => !known.has(access.id))],
+            failed: accessesResult.status === 'rejected' && personnelResult.status === 'rejected',
+          };
+        }),
       );
       if (!active) return;
       const available = results.flatMap((result) =>
@@ -609,7 +633,9 @@ function UsersView({
             }))
           : [],
       );
-      const failed = results.filter((result) => result.status === 'rejected');
+      const failed = results.filter((result) =>
+        result.status === 'rejected' || (result.status === 'fulfilled' && result.value.failed),
+      );
       setRecords(available);
       if (failed.length) {
         setError(
@@ -624,7 +650,7 @@ function UsersView({
     return () => {
       active = false;
     };
-  }, [clients, demoMode, refreshKey]);
+  }, [clients, demoMode, refreshKey, reloadKey]);
 
   const normalizedSearch = searchValue.trim().toLowerCase();
   const filtered = records.filter(({ client, access }) => {
@@ -711,6 +737,37 @@ function UsersView({
           detail="Espacios de trabajo vigentes"
           icon={<BriefcaseBusiness size={18} />}
         />
+      </section>
+
+      <section className="mt-6 rounded-[1.6rem] border border-[#d6af57]/35 bg-[#fffaf0] p-5 shadow-[0_16px_45px_rgba(7,26,51,.03)] sm:p-6">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[.16em] text-[#9a742b]">Catálogo de autorización</p>
+            <h3 className="mt-2 text-xl font-semibold text-[#071a33]">Espacios de trabajo y permisos disponibles</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">Este es el catálogo que ROOT puede asignar a cada trabajador. En “Administrar accesos” puedes combinar espacios completos o permisos individuales.</p>
+          </div>
+          <span className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-bold text-[#76571e] ring-1 ring-[#d8be86]/50">{workspaceCatalog.length} espacios · {explicitScopeCatalog.length} permisos</span>
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {workspaceCatalog.map((workspace) => {
+            const workspaceScopes = explicitScopeCatalog.filter((scope) =>
+              scope.workspaceCode === workspace.code ||
+              (workspace.code === 'ADMINISTRATION' && (scope.code.startsWith('core.') || scope.code.startsWith('treasury.') || scope.code.startsWith('billing.'))) ||
+              (workspace.code === 'ACCOUNTING' && (scope.code.startsWith('accounting.') || scope.code.startsWith('treasury.'))),
+            );
+            return (
+              <details key={workspace.code} className="group rounded-2xl border border-white bg-white p-4 shadow-sm">
+                <summary className="cursor-pointer list-none font-bold text-[#071a33] marker:hidden">
+                  <span className="flex items-center justify-between gap-3"><span>{workspace.label}</span><span className="rounded-full bg-[#f1eadb] px-2 py-1 text-[10px] text-[#76571e]">{workspaceScopes.length}</span></span>
+                  <span className="mt-1 block text-xs font-normal leading-5 text-slate-500">{workspace.description}</span>
+                </summary>
+                <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+                  {workspaceScopes.length ? workspaceScopes.map((scope) => <div key={scope.code} className="rounded-xl bg-[#fbfaf7] px-3 py-2"><p className="text-xs font-bold text-[#071a33]">{scope.label}</p><p className="mt-0.5 text-[11px] leading-4 text-slate-500">{scope.description}</p></div>) : <p className="text-xs text-slate-500">Se asigna como espacio operativo completo.</p>}
+                </div>
+              </details>
+            );
+          })}
+        </div>
       </section>
 
       <section className="mt-6 rounded-[1.6rem] border border-[#071a33]/8 bg-white shadow-[0_16px_45px_rgba(7,26,51,.04)]">
@@ -825,6 +882,9 @@ function UsersView({
                             ? 'Acceso activo'
                             : access.status}
                         </span>
+                        <span className="rounded-full bg-[#eef2f5] px-2.5 py-1 text-xs font-bold text-[#31465d]">
+                          {access.employmentActive ? 'Personal' : 'Propietario / otro acceso'}
+                        </span>
                       </div>
                     </div>
 
@@ -861,8 +921,8 @@ function UsersView({
 
                     <AccessColumn title="Permisos explícitos">
                       <div className="flex flex-wrap gap-2">
-                        {access.scopes.length ? (
-                          access.scopes.map((scope) => (
+                        {(Array.isArray(access.scopes) ? access.scopes : []).length ? (
+                          (Array.isArray(access.scopes) ? access.scopes : []).map((scope) => (
                             <span
                               key={scope}
                               title={scope}
@@ -878,6 +938,15 @@ function UsersView({
                         )}
                       </div>
                     </AccessColumn>
+                  </div>
+                  <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-4">
+                    <button
+                      type="button"
+                      onClick={() => onManageClient(client.id)}
+                      className="rounded-xl border border-[#071a33]/12 bg-white px-4 py-2.5 text-xs font-bold text-[#071a33] hover:border-[#b08a3c]"
+                    >
+                      Editar permisos y espacios
+                    </button>
                   </div>
                 </article>
               );
@@ -921,8 +990,129 @@ function AccessColumn({
   );
 }
 
-function AuditView({ events }: { events: SuperAdminState['audit'] }) {
-  return <><SectionHeader eyebrow="Control inmutable" title="Auditoría de plataforma" copy="Toda decisión sensible sobre clientes, pagos, licencias y accesos debe quedar atribuida y fechada." /><section className="rounded-[1.6rem] border border-[#071a33]/8 bg-white p-5 shadow-[0_16px_45px_rgba(7,26,51,.04)] sm:p-6"><div className="space-y-0">{events.map(event => <article key={event.id} className="grid gap-3 border-b border-slate-100 py-5 md:grid-cols-[42px_170px_1fr_auto]"><span className={`flex h-9 w-9 items-center justify-center rounded-xl ${event.severity === 'critical' ? 'bg-rose-50 text-rose-700' : event.severity === 'warning' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>{event.severity === 'critical' ? <LockKeyhole size={17} /> : event.severity === 'warning' ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}</span><div><p className="text-sm font-bold">{event.action}</p><p className="mt-1 text-xs text-slate-400">{event.actor}</p></div><div><p className="text-sm font-semibold">{event.target}</p><p className="mt-1 text-sm leading-6 text-slate-500">{event.detail}</p></div><time className="text-xs text-slate-400">{dateTime.format(new Date(event.createdAt))}</time></article>)}</div></section></>;
+function AuditView({
+  clients,
+  demoMode,
+  fallbackEvents,
+}: {
+  clients: PlatformClient[];
+  demoMode: boolean;
+  fallbackEvents: SuperAdminState['audit'];
+}) {
+  const [communityId, setCommunityId] = useState('all');
+  const [searchValue, setSearchValue] = useState('');
+  const [events, setEvents] = useState<PlatformAuditRecord[]>([]);
+  const [loading, setLoading] = useState(!demoMode);
+  const [error, setError] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const demoEvents = fallbackEvents.map((event) => ({
+    id: event.id,
+    communityId: null,
+    actorUserId: null,
+    requestId: `demo-request-${event.id}`,
+    action: event.action,
+    entityType: 'Platform',
+    entityId: event.id,
+    detail: event.detail,
+    reason: null,
+    before: null,
+    after: null,
+    ipAddress: null,
+    userAgent: null,
+    createdAt: event.createdAt,
+    community: null,
+    actor: { id: 'demo-root', email: event.actor, platformRole: 'ROOT', person: null },
+  } satisfies PlatformAuditRecord));
+
+  useEffect(() => {
+    let active = true;
+    if (demoMode) {
+      return () => { active = false; };
+    }
+    void Promise.resolve().then(() => {
+      if (active) {
+        setLoading(true);
+        setError('');
+      }
+    });
+    void CasaPlatformService.listAuditEvents(
+      communityId === 'all'
+        ? undefined
+        : clients.find((client) => client.id === communityId)?.communityId ?? undefined,
+    )
+      .then((data) => {
+        if (active) setEvents(data);
+      })
+      .catch((loadError: unknown) => {
+        if (active) {
+          setEvents([]);
+          setError(loadError instanceof Error ? loadError.message : 'No fue posible consultar la auditoría global.');
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [clients, communityId, demoMode, fallbackEvents, refreshKey]);
+
+  const normalizedSearch = searchValue.trim().toLowerCase();
+  const filteredEvents = (demoMode ? demoEvents : events).filter((event) => {
+    const actorName = event.actor?.person
+      ? `${event.actor.person.firstName} ${event.actor.person.lastName}`
+      : event.actor?.email ?? event.actorUserId ?? '';
+    return !normalizedSearch || `${event.community?.name ?? 'Plataforma'} ${event.action} ${event.detail} ${event.reason ?? ''} ${actorName} ${event.actorUserId ?? ''} ${event.id} ${event.entityId ?? ''}`.toLowerCase().includes(normalizedSearch);
+  });
+
+  const formatPayload = (value: unknown) => {
+    if (value === null || value === undefined) return '—';
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return 'No disponible';
+    }
+  };
+
+  return <>
+    <SectionHeader
+      eyebrow="Central de auditoría"
+      title="Actividad de todas las comunidades"
+      copy="Consulta quién hizo qué, en qué comunidad y cuándo. La vista ROOT no limita el alcance: puedes revisar la bitácora global o seleccionar una comunidad específica."
+    />
+    <section className="rounded-[1.6rem] border border-[#071a33]/8 bg-white shadow-[0_16px_45px_rgba(7,26,51,.04)]">
+      <div className="grid gap-3 border-b border-slate-100 p-4 md:grid-cols-[1fr_280px_auto] md:items-center sm:p-5">
+        <div className="relative">
+          <Search className="absolute left-3.5 top-3 text-slate-400" size={17} />
+          <input value={searchValue} onChange={(event) => setSearchValue(event.target.value)} placeholder="Buscar usuario, acción, ID o detalle" className="w-full rounded-xl border border-slate-200 bg-[#fbfaf7] py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#b08a3c]" />
+        </div>
+        <select value={communityId} onChange={(event) => setCommunityId(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold">
+          <option value="all">Todas las comunidades</option>
+          {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+        </select>
+        <button onClick={() => setRefreshKey((current) => current + 1)} disabled={loading} className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold disabled:opacity-50"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} />Actualizar</button>
+      </div>
+      {error && <div role="alert" className="m-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</div>}
+      {loading ? <div className="flex items-center justify-center gap-3 py-20 text-sm font-semibold text-slate-500"><span className="h-7 w-7 animate-spin rounded-full border-2 border-[#071a33]/15 border-t-[#b08a3c]" />Consultando bitácora global…</div> : filteredEvents.length ? <div className="divide-y divide-slate-100">
+        {filteredEvents.map((event) => {
+          const person = event.actor?.person;
+          const actorName = person ? `${person.firstName} ${person.lastName}` : event.actor?.email ?? event.actorUserId ?? 'Sistema';
+          return <details key={event.id} className="group px-5 py-5 sm:px-6">
+            <summary className="grid cursor-pointer list-none gap-4 md:grid-cols-[minmax(180px,.75fr)_minmax(220px,1.2fr)_minmax(240px,1.5fr)_180px] md:items-start">
+              <div><span className="inline-flex rounded-full bg-[#f0e8d8] px-2.5 py-1 text-xs font-bold text-[#76571e]">{event.community?.name ?? 'Plataforma CASA'}</span><p className="mt-2 text-[11px] font-mono text-slate-400">ID: {event.id}</p></div>
+              <div><p className="text-sm font-bold text-[#071a33]">{event.action}</p><p className="mt-1 text-xs text-slate-500">{event.entityType}{event.entityId ? ` · ${event.entityId}` : ''}</p></div>
+              <div><p className="text-sm font-semibold">{event.detail}</p><p className="mt-1 text-xs leading-5 text-slate-500">{event.reason ? `Motivo: ${event.reason}` : 'Sin motivo adicional'}</p></div>
+              <div className="text-xs text-slate-500 md:text-right"><p className="font-semibold text-[#071a33]">{actorName}</p><p className="mt-1 break-all font-mono text-[10px]">Usuario: {event.actorUserId ?? event.actor?.id ?? '—'}</p><time className="mt-1 block">{dateTime.format(new Date(event.createdAt))}</time></div>
+            </summary>
+            <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 text-xs md:grid-cols-3">
+              <div><p className="font-bold uppercase tracking-wider text-slate-400">Identidad</p><p className="mt-2 font-mono text-slate-600">{person ? `${person.documentType}-${person.documentNumber}` : event.actor?.email ?? '—'}</p><p className="mt-1 break-all font-mono text-slate-400">Request: {event.requestId}</p></div>
+              <div><p className="font-bold uppercase tracking-wider text-slate-400">Antes</p><pre className="mt-2 max-h-36 overflow-auto rounded-xl bg-[#fbfaf7] p-3 text-[10px] leading-4 text-slate-600">{formatPayload(event.before)}</pre></div>
+              <div><p className="font-bold uppercase tracking-wider text-slate-400">Después</p><pre className="mt-2 max-h-36 overflow-auto rounded-xl bg-[#fbfaf7] p-3 text-[10px] leading-4 text-slate-600">{formatPayload(event.after)}</pre></div>
+            </div>
+          </details>;
+        })}
+      </div> : <div className="p-14 text-center text-sm font-semibold text-slate-500">No hay eventos para los filtros seleccionados.</div>}
+    </section>
+  </>;
 }
 
 function SettingsView() {
@@ -948,10 +1138,12 @@ function ClientDrawer({ client, payments, onClose, onToggle, onRevoke, onCreateA
 
 function ManageCommunityAccessModal({
   client,
+  initialAccessId,
   onClose,
   onSaved,
 }: {
   client: PlatformClient;
+  initialAccessId?: string;
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
@@ -959,12 +1151,15 @@ function ManageCommunityAccessModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [accessMode, setAccessMode] = useState<AccessMode>('CUSTOM');
   const [selectedRole, setSelectedRole] = useState('');
   const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
   const [reason, setReason] = useState('');
+  const [reasonError, setReasonError] = useState('');
+  const [openedInitialAccess, setOpenedInitialAccess] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [revokeReason, setRevokeReason] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -1015,17 +1210,29 @@ function ManageCommunityAccessModal({
       return;
     }
     setEditingId(record.id);
-    setAccessMode(inferAccessMode(record.scopes));
     setSelectedRole(record.roleCode);
-    setSelectedScopes(Array.isArray(record.scopes) ? record.scopes : []);
+    setSelectedScopes(normalizeWorkspaceScopes(Array.isArray(record.scopes) ? record.scopes : [], record.workspaces.filter((workspace) => workspace.status === 'ACTIVE').map((workspace) => workspace.workspaceCode)));
     setSelectedCodes(
-      record.workspaces
-        .filter((workspace) => workspace.status === 'ACTIVE')
-        .map((workspace) => workspace.workspaceCode),
+      record.roleCode === 'ADMINISTRADOR_INTEGRAL'
+        ? workspaceCatalog.map((workspace) => workspace.code)
+        : record.workspaces
+            .filter((workspace) => workspace.status === 'ACTIVE')
+            .map((workspace) => workspace.workspaceCode),
     );
     setReason('');
+    setReasonError('');
     setError('');
   };
+
+  useEffect(() => {
+    if (!initialAccessId || openedInitialAccess || !records.length) return;
+    const requestedAccess = records.find((record) => record.id === initialAccessId);
+    const timer = window.setTimeout(() => {
+      if (requestedAccess) beginEditing(requestedAccess);
+      setOpenedInitialAccess(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [initialAccessId, openedInitialAccess, records]);
 
   const toggleScope = (code: string) => {
     setSelectedScopes((current) =>
@@ -1045,26 +1252,15 @@ function ManageCommunityAccessModal({
 
   const save = async () => {
     if (!editingId) return;
-    const effectiveWorkspaces =
-      accessMode === 'COMMUNITY_FULL'
-        ? workspaceCatalog.map((workspace) => workspace.code)
-        : selectedCodes;
-    const effectiveScopes =
-      accessMode === 'COMMUNITY_FULL'
-        ? [communityFullAccessScope]
-        : accessMode === 'WORKSPACE_FULL'
-          ? scopesForWorkspaceFull(effectiveWorkspaces)
-          : selectedScopes;
+    setReasonError('');
+    const effectiveWorkspaces = selectedCodes;
+    const effectiveScopes = selectedScopes;
     if (!effectiveWorkspaces.length) {
       setError('El personal debe conservar al menos un espacio de trabajo.');
       return;
     }
-    if (!effectiveScopes.length) {
-      setError('El personal debe conservar al menos un permiso explícito.');
-      return;
-    }
     if (reason.trim().length < 8) {
-      setError('Explica brevemente el motivo del cambio.');
+      setReasonError('Explica brevemente el motivo del cambio (mínimo 8 caracteres).');
       return;
     }
     setSaving(true);
@@ -1095,6 +1291,34 @@ function ManageCommunityAccessModal({
     }
   };
 
+  const revoke = async (record: CommunityAccessRecord) => {
+    if (revokeReason.trim().length < 8) {
+      setError('Explica brevemente el motivo de la revocación.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await CasaPlatformService.revokeCommunityAccess(
+        client.id,
+        record.id,
+        revokeReason.trim(),
+      );
+      await load();
+      setRevokingId(null);
+      setRevokeReason('');
+      onSaved('Acceso revocado y sesiones cerradas.');
+    } catch (revokeError) {
+      setError(
+        revokeError instanceof Error
+          ? revokeError.message
+          : 'No fue posible revocar el acceso.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Modal
       title="Accesos del personal"
@@ -1117,7 +1341,10 @@ function ManageCommunityAccessModal({
         </div>
       ) : records.length ? (
         <div className="space-y-4">
-          {records.map((record) => {
+          {(initialAccessId
+            ? records.filter((record) => record.id === initialAccessId)
+            : records
+          ).map((record) => {
             const activeCodes = record.workspaces
               .filter((workspace) => workspace.status === 'ACTIVE')
               .map((workspace) => workspace.workspaceCode);
@@ -1172,6 +1399,18 @@ function ManageCommunityAccessModal({
                         ),
                       )}
                     </div>
+                    {record.status === 'ACTIVE' && (
+                      <div className="mt-4">
+                        {revokingId === record.id ? (
+                          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
+                            <label className="block text-xs font-bold text-rose-800">Motivo obligatorio de la revocación<textarea value={revokeReason} onChange={(event) => setRevokeReason(event.target.value)} rows={2} maxLength={500} className="mt-2 w-full rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-rose-400" placeholder="Ej.: Terminación de funciones." /></label>
+                            <div className="mt-2 flex justify-end gap-2"><button type="button" onClick={() => { setRevokingId(null); setRevokeReason(''); }} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold">Cancelar</button><button type="button" onClick={() => revoke(record)} disabled={saving} className="rounded-lg bg-rose-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{saving ? 'Revocando…' : 'Confirmar revocación'}</button></div>
+                          </div>
+                        ) : (
+                          <button type="button" onClick={() => { setRevokingId(record.id); setRevokeReason(''); setError(''); }} className="rounded-xl border border-rose-200 px-4 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-50">Revocar acceso</button>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -1201,46 +1440,6 @@ function ManageCommunityAccessModal({
                 {isEditing && (
                   <div className="mt-5 border-t border-slate-200 pt-5">
                     <p className="text-xs font-bold uppercase tracking-[.14em] text-slate-400">
-                      Nivel de acceso
-                    </p>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                      {([
-                        ['CUSTOM', 'Personalizado', 'Selecciona capacidades individuales.'],
-                        ['WORKSPACE_FULL', 'Total por espacio', 'Todo dentro de los espacios marcados.'],
-                        ['COMMUNITY_FULL', 'Integral', 'Toda la comunidad, nunca CASA Control.'],
-                      ] as const).map(([mode, label, description]) => (
-                        <button
-                          key={mode}
-                          type="button"
-                          onClick={() => {
-                            setAccessMode(mode);
-                            if (mode === 'COMMUNITY_FULL') {
-                              setSelectedRole('ADMINISTRADOR_INTEGRAL');
-                              setSelectedCodes(
-                                workspaceCatalog.map((workspace) => workspace.code),
-                              );
-                            }
-                          }}
-                          className={`rounded-xl border p-3 text-left ${
-                            accessMode === mode
-                              ? 'border-[#b08a3c] bg-[#f6f0e4]'
-                              : 'border-slate-200 bg-white'
-                          }`}
-                        >
-                          <span className="block text-sm font-bold">{label}</span>
-                          <span className="mt-1 block text-xs leading-5 text-slate-400">
-                            {description}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                    {accessMode === 'COMMUNITY_FULL' && (
-                      <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                        Tendrá autoridad operativa total exclusivamente dentro de esta comunidad. No podrá administrar licencias, otros clientes ni CASA Control.
-                      </div>
-                    )}
-
-                    <p className="text-xs font-bold uppercase tracking-[.14em] text-slate-400">
                       Rol operativo
                     </p>
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -1256,7 +1455,14 @@ function ManageCommunityAccessModal({
                           <input
                             type="radio"
                             checked={selectedRole === role.code}
-                            onChange={() => setSelectedRole(role.code)}
+                            onChange={() => {
+                              const nextWorkspaces = workspaceDefaultsForRole(role.code);
+                              setSelectedRole(role.code);
+                              setSelectedCodes(nextWorkspaces);
+                              setSelectedScopes(
+                                scopesDefaultsForRole(role.code, nextWorkspaces),
+                              );
+                            }}
                             className="mt-0.5 h-4 w-4 accent-[#071a33]"
                           />
                           <span>
@@ -1271,7 +1477,7 @@ function ManageCommunityAccessModal({
 
                     <div className="mt-5">
                       <WorkspacePermissionsTree
-                        accessMode={accessMode}
+                        accessMode="CUSTOM"
                         selectedWorkspaces={selectedCodes}
                         selectedScopes={selectedScopes}
                         onToggleWorkspace={toggleWorkspace}
@@ -1280,7 +1486,8 @@ function ManageCommunityAccessModal({
                           setSelectedCodes(current => Array.from(new Set([...current, _wsCode])));
                           setSelectedScopes(current => Array.from(new Set([...current, ...scopeCodes])));
                         }}
-                        onDeselectAllInWorkspace={(_wsCode, scopeCodes) => {
+                        onDeselectAllInWorkspace={(wsCode, scopeCodes) => {
+                          setSelectedCodes(current => current.filter(code => code !== wsCode));
                           setSelectedScopes(current => current.filter(code => !scopeCodes.includes(code)));
                         }}
                       />
@@ -1289,10 +1496,16 @@ function ManageCommunityAccessModal({
                       Motivo obligatorio
                       <textarea
                         value={reason}
-                        onChange={(event) => setReason(event.target.value)}
-                        className={`${inputClass} min-h-20 resize-y`}
+                        onChange={(event) => {
+                          setReason(event.target.value);
+                          if (reasonError) setReasonError('');
+                        }}
+                        aria-invalid={Boolean(reasonError)}
+                        aria-describedby={reasonError ? 'access-change-reason-error' : undefined}
+                        className={`${inputClass} min-h-20 resize-y ${reasonError ? 'border-rose-500 focus:border-rose-500 focus:ring-rose-500/10' : ''}`}
                         placeholder="Ej.: Cambio de responsabilidades aprobado por la junta."
                       />
+                      {reasonError && <span id="access-change-reason-error" role="alert" className="mt-2 block text-xs font-semibold text-rose-700">{reasonError}</span>}
                     </label>
                     <button
                       type="button"
@@ -1320,12 +1533,13 @@ function ManageCommunityAccessModal({
 }
 
 function CommunityAccessModal({ client, error, onClose, onSubmit }: { client: PlatformClient; error: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
-  const [accessMode, setAccessMode] = useState<AccessMode>('CUSTOM');
   const [selectedRole, setSelectedRole] = useState('ADMINISTRACION');
-  const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>([
-    'ADMINISTRATION',
-  ]);
-  const [selectedScopes, setSelectedScopes] = useState<string[]>(['core.read']);
+  const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>(
+    workspaceDefaultsForRole('ADMINISTRACION'),
+  );
+  const [selectedScopes, setSelectedScopes] = useState<string[]>(
+    scopesDefaultsForRole('ADMINISTRACION', workspaceDefaultsForRole('ADMINISTRACION')),
+  );
   const [passwordLength, setPasswordLength] = useState(0);
   const [personnel, setPersonnel] = useState<AccessPersonnelRecord[]>([]);
   const [selectedPersonId, setSelectedPersonId] = useState('');
@@ -1336,16 +1550,8 @@ function CommunityAccessModal({ client, error, onClose, onSubmit }: { client: Pl
     label: role.label,
     description: role.description,
   }));
-  const effectiveWorkspaceCodes =
-    accessMode === 'COMMUNITY_FULL'
-      ? workspaceCatalog.map((workspace) => workspace.code)
-      : selectedWorkspaces;
-  const effectiveScopes =
-    accessMode === 'COMMUNITY_FULL'
-      ? [communityFullAccessScope]
-      : accessMode === 'WORKSPACE_FULL'
-        ? scopesForWorkspaceFull(effectiveWorkspaceCodes)
-        : selectedScopes;
+  const effectiveWorkspaceCodes = selectedWorkspaces;
+  const effectiveScopes = selectedScopes;
   const selectedPerson = personnel.find(
     (record) => record.personId === selectedPersonId,
   );
@@ -1523,48 +1729,6 @@ function CommunityAccessModal({ client, error, onClose, onSubmit }: { client: Pl
 
         <fieldset className="mt-7">
           <legend className="text-sm font-bold text-[#071a33]">
-            Nivel de acceso
-          </legend>
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            {([
-              ['CUSTOM', 'Personalizado', 'Permisos individuales.'],
-              ['WORKSPACE_FULL', 'Total por espacio', 'Todo en las áreas elegidas.'],
-              ['COMMUNITY_FULL', 'Integral', 'Toda la comunidad.'],
-            ] as const).map(([mode, label, description]) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => {
-                  setAccessMode(mode);
-                  if (mode === 'COMMUNITY_FULL') {
-                    setSelectedRole('ADMINISTRADOR_INTEGRAL');
-                    setSelectedWorkspaces(
-                      workspaceCatalog.map((workspace) => workspace.code),
-                    );
-                  }
-                }}
-                className={`rounded-xl border p-3 text-left ${
-                  accessMode === mode
-                    ? 'border-[#b08a3c] bg-[#f6f0e4]'
-                    : 'border-slate-200 bg-[#fbfaf7]'
-                }`}
-              >
-                <span className="block text-sm font-bold">{label}</span>
-                <span className="mt-1 block text-xs leading-5 text-slate-400">
-                  {description}
-                </span>
-              </button>
-            ))}
-          </div>
-          {accessMode === 'COMMUNITY_FULL' && (
-            <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-              Autoridad operativa total únicamente en {client.name}. No concede acceso ROOT, control de licencias ni acceso a otros clientes.
-            </p>
-          )}
-        </fieldset>
-
-        <fieldset className="mt-7">
-          <legend className="text-sm font-bold text-[#071a33]">
             Rol operativo
           </legend>
           <p className="mt-1 text-xs leading-5 text-slate-500">
@@ -1588,21 +1752,12 @@ function CommunityAccessModal({ client, error, onClose, onSubmit }: { client: Pl
                   checked={selectedRole === role.value}
                   onChange={() => {
                     setSelectedRole(role.value);
-                    if (role.value === 'ADMINISTRADOR_INTEGRAL') {
-                      setAccessMode('COMMUNITY_FULL');
-                      setSelectedWorkspaces(
-                        workspaceCatalog.map((workspace) => workspace.code),
-                      );
-                    } else if (role.value === 'ATENCION') {
-                      setAccessMode('CUSTOM');
-                      setSelectedWorkspaces(['OWNER_SERVICE']);
-                      setSelectedScopes([...ownerServiceAgentScopes]);
-                    }
+                    const nextWorkspaces = workspaceDefaultsForRole(role.value);
+                    setSelectedWorkspaces(nextWorkspaces);
+                    setSelectedScopes(
+                      scopesDefaultsForRole(role.value, nextWorkspaces),
+                    );
                   }}
-                  disabled={
-                    accessMode === 'COMMUNITY_FULL' &&
-                    role.value !== 'ADMINISTRADOR_INTEGRAL'
-                  }
                   className="h-4 w-4 accent-[#071a33]"
                   required
                 />
@@ -1634,7 +1789,7 @@ function CommunityAccessModal({ client, error, onClose, onSubmit }: { client: Pl
 
         <div className="mt-7">
           <WorkspacePermissionsTree
-            accessMode={accessMode}
+            accessMode="CUSTOM"
             selectedWorkspaces={selectedWorkspaces}
             selectedScopes={selectedScopes}
             onToggleWorkspace={(wsCode) =>
@@ -1655,7 +1810,10 @@ function CommunityAccessModal({ client, error, onClose, onSubmit }: { client: Pl
               setSelectedWorkspaces((current) => Array.from(new Set([...current, wsCode])));
               setSelectedScopes((current) => Array.from(new Set([...current, ...scopeCodes])));
             }}
-            onDeselectAllInWorkspace={(_wsCode, scopeCodes) => {
+            onDeselectAllInWorkspace={(wsCode, scopeCodes) => {
+              setSelectedWorkspaces((current) =>
+                current.filter((code) => code !== wsCode),
+              );
               setSelectedScopes((current) => current.filter((code) => !scopeCodes.includes(code)));
             }}
           />

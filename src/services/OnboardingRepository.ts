@@ -3,11 +3,12 @@ import {
   type OnboardingCase,
   type OnboardingState,
 } from '../domain/onboarding';
+import { safeRandomUUID } from '../utils/uuid';
 
 const STORAGE_KEY = 'casa_onboarding_v1';
 
 export function onboardingId(prefix: string) {
-  return `${prefix}_${crypto.randomUUID()}`;
+  return `${prefix}_${safeRandomUUID()}`;
 }
 
 export function createOnboardingCase(clientId: string): OnboardingCase {
@@ -126,7 +127,18 @@ export const OnboardingRepository = {
     if (!stored) return cloneSeed();
     try {
       const parsed = JSON.parse(stored) as Partial<OnboardingState>;
-      return { cases: parsed.cases ?? [] };
+      return {
+        cases: (parsed.cases ?? []).map(item => ({
+          ...item,
+          // Remove the retired legacy stage without crediting it as progress.
+          // Resume the next pending stage when legacy was the active step.
+          stages: (item.stages ?? []).filter(stage => stage.key !== 'sources').map((stage, index, stages) => stage.status === 'pending' && stages.slice(0, index).every(previous => previous.status === 'completed')
+            ? { ...stage, status: 'in-progress' as const }
+            : stage).map(stage => stage.key === 'finances'
+            ? { ...stage, label: 'Inicialización financiera', description: 'Corte, historia, saldos, avisos, pagos y apertura contable.' }
+            : stage),
+        })),
+      };
     } catch {
       return cloneSeed();
     }

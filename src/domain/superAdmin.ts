@@ -1,17 +1,42 @@
 export type ClientStanding = 'solvent' | 'due-soon' | 'past-due' | 'suspended' | 'onboarding';
 export type LicenseStatus = 'active' | 'grace' | 'suspended' | 'revoked' | 'expired';
 export type PaymentStatus = 'pending' | 'reconciled' | 'rejected';
+export type LicensePaymentMethod = 'BANK_TRANSFER' | 'MOBILE_PAYMENT' | 'CASH' | 'OTHER';
+export type LicenseBillingStatus = 'current' | 'due-soon' | 'overdue';
 
 export interface ClientLicense {
+  id?: string;
   status: LicenseStatus;
   autoRenewOnReconciliation: boolean;
   monthlyFee: number;
-  currency: 'USD';
+  currency: 'USD' | 'VES' | 'EUR';
   periodStart: string;
   periodEnd: string;
   graceUntil: string;
+  graceDays?: number;
+  isTrial?: boolean;
+  trialFrom?: string | null;
+  trialUntil?: string | null;
   lastReconciledAt: string | null;
   revokedAt: string | null;
+}
+
+export interface LicensePaymentRecord {
+  id: string;
+  licenseId?: string;
+  amount: number;
+  exchangeRate: number;
+  currency: 'USD' | 'VES' | 'EUR';
+  paymentMethod: LicensePaymentMethod;
+  reference: string;
+  paidAt: string;
+  notes?: string | null;
+  createdAt: string;
+}
+
+export interface PlatformClientDetail extends PlatformClient {
+  licenses: ClientLicense[];
+  licensePayments: LicensePaymentRecord[];
 }
 
 export interface PlatformClient {
@@ -46,7 +71,7 @@ export interface LicensePayment {
   clientId: string;
   reference: string;
   amount: number;
-  currency: 'USD';
+  currency: 'USD' | 'VES' | 'EUR';
   bank: string;
   reportedAt: string;
   reconciledAt: string | null;

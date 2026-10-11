@@ -9,10 +9,10 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleDashed,
+  ClipboardList,
   Database,
   FileArchive,
   FileCheck2,
-  FileSpreadsheet,
   Play,
   Plus,
   RefreshCw,
@@ -22,8 +22,6 @@ import {
 } from 'lucide-react';
 import type { PlatformClient } from '../../domain/superAdmin';
 import type {
-  MigrationBatchStatus,
-  MigrationSourceType,
   OnboardingCase,
   OnboardingStageKey,
   OnboardingStageStatus,
@@ -33,20 +31,35 @@ import type {
 } from '../../domain/onboarding';
 import {
   createOnboardingCase,
-  onboardingId,
   OnboardingRepository,
 } from '../../services/OnboardingRepository';
 import {
   resolveOnboardingCounts,
   runValidationDiagnostics,
+  resolveInitializationChecks,
   validateOnboardingStage,
   type StageValidation,
 } from '../../domain/onboardingValidation';
 import { onboardingStageGuides } from '../../domain/onboardingGuide';
 import type { CoreSection } from '../core/CoreModule';
-import ImportAssistant from './ImportAssistant';
+import { authorizedRequest } from '../../services/CasaPlatformService';
+import { CasaAuthService } from '../../services/CasaAuthService';
+import { RootSession } from '../../services/RootSession';
 
-type OnboardingTab = 'roadmap' | 'sources' | 'imports' | 'validation';
+type OnboardingTab = 'roadmap' | 'initialization' | 'validation';
+type InitializationView = 'overview' | 'owner-balances' | 'payables' | 'banks' | 'notices' | 'payments' | 'reconciliation';
+type InitializationSummary = {
+  id: string;
+  cutoverDate: string | null;
+  historyFrom?: string | null;
+  historyTo?: string | null;
+  rows?: Array<{
+    id: string;
+    kind: string;
+    propertyId: string | null;
+    status: string;
+  }>;
+};
 
 const inputClass =
   'mt-2 w-full rounded-xl border border-slate-200 bg-[#fbfaf7] px-3.5 py-3 text-sm text-[#0b1d33] outline-none transition focus:border-[#b08a3c] focus:ring-4 focus:ring-[#b08a3c]/10';
@@ -56,22 +69,6 @@ const statusLabel: Record<OnboardingStageStatus, string> = {
   'in-progress': 'En curso',
   completed: 'Completada',
   blocked: 'Bloqueada',
-};
-
-const batchStatusLabel: Record<MigrationBatchStatus, string> = {
-  registered: 'Registrado',
-  extracted: 'Extraído',
-  mapped: 'Mapeado',
-  validated: 'Validado',
-  imported: 'Importado',
-  failed: 'Falló',
-};
-
-const sourceTypeLabel: Record<MigrationSourceType, string> = {
-  access: 'Microsoft Access',
-  excel: 'Excel',
-  csv: 'CSV',
-  manual: 'Carga manual',
 };
 
 const severityMeta: Record<ValidationSeverity, { label: string; className: string; icon: typeof AlertTriangle }> = {
@@ -132,7 +129,7 @@ type OnboardingDestination =
   | { view: 'clients'; clientId: string }
   | { view: 'core'; clientId: string; section?: CoreSection };
 
-export default function OnboardingModule({ clients, demoMode, onNavigate }: { clients: PlatformClient[]; demoMode: boolean; onNavigate: (destination: OnboardingDestination) => void }) {
+export default function OnboardingModule({ clients, onNavigate }: { clients: PlatformClient[]; demoMode: boolean; onNavigate: (destination: OnboardingDestination) => void }) {
   const [state, setState] = useState<OnboardingState>(() => {
     const stored = OnboardingRepository.load();
     const missing = clients.filter(client => !stored.cases.some(item => item.clientId === client.id));
@@ -145,13 +142,19 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
       ?? '';
   });
   const [tab, setTab] = useState<OnboardingTab>('roadmap');
-  const [showSourceModal, setShowSourceModal] = useState(false);
   const [stageReview, setStageReview] = useState<StageValidation | null>(null);
   const [completionConfirmed, setCompletionConfirmed] = useState(false);
   const [guideStageKey, setGuideStageKey] = useState<OnboardingStageKey | null>(null);
   const [showOperationsModal, setShowOperationsModal] = useState(false);
   const [findingFilter, setFindingFilter] = useState<'open' | 'resolved'>('open');
   const [toast, setToast] = useState('');
+  const [initializationStarting, setInitializationStarting] = useState(false);
+  const [showInitializationStart, setShowInitializationStart] = useState(false);
+  const [initializationFormError, setInitializationFormError] = useState('');
+  const [initializationId, setInitializationId] = useState(() => localStorage.getItem(`casa_initialization_${selectedClientId}`) || '');
+  const [initializationCase, setInitializationCase] = useState<InitializationSummary | null>(null);
+  const [showInitializationRows, setShowInitializationRows] = useState(false);
+  const [initializationView, setInitializationView] = useState<InitializationView>('overview');
 
   useEffect(() => OnboardingRepository.save(state), [state]);
   useEffect(() => {
@@ -159,7 +162,6 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
     const timeout = window.setTimeout(() => setToast(''), 3200);
     return () => window.clearTimeout(timeout);
   }, [toast]);
-
   const onboardingCase = state.cases.find(item => item.clientId === selectedClientId) ?? null;
   const client = clients.find(item => item.id === selectedClientId) ?? null;
   const effectiveCounts = onboardingCase ? resolveOnboardingCounts(onboardingCase, client) : null;
@@ -173,6 +175,33 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
   const guideValidation = onboardingCase && client && guideStageKey
     ? validateOnboardingStage(guideStageKey, onboardingCase, client)
     : null;
+  const initializationChecks = onboardingCase ? resolveInitializationChecks(onboardingCase, client) : [];
+  const initializationComplete = initializationChecks.filter(check => check.status === 'complete').length;
+  const openingBalancePropertyIds = new Set(
+    initializationCase?.rows
+      ?.filter(row => row.kind === 'OWNER_BALANCE' && row.propertyId)
+      .map(row => row.propertyId as string) ?? [],
+  );
+  useEffect(() => {
+    const communityId = client?.communityId;
+    if (tab !== 'initialization' || !communityId || !RootSession.token()) return;
+    let cancelled = false;
+    void (async () => {
+      setInitializationCase(null);
+      const context = await CasaAuthService.selectContext(RootSession.token(), communityId);
+      if (!context.success || cancelled) return;
+      RootSession.updateTokens(context.data.accessToken, RootSession.refreshToken());
+      try {
+        const response = await authorizedRequest<InitializationSummary | null>({ method: 'GET', url: '/accounting/initialization' });
+        if (!cancelled && response.data?.id) {
+          setInitializationId(response.data.id);
+          setInitializationCase(response.data);
+          localStorage.setItem(`casa_initialization_${selectedClientId}`, response.data.id);
+        }
+      } catch { /* No expediente todavía. */ }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, selectedClientId, client?.communityId]);
 
   const updateCase = (producer: (current: OnboardingCase) => OnboardingCase) => {
     setState(current => ({
@@ -254,21 +283,16 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
       onNavigate({ view: 'clients', clientId: client.id });
       return;
     }
-    if (stageKey === 'sources') {
-      if (demoMode) {
-        setTab('sources');
-        if (!onboardingCase?.batches.length) setShowSourceModal(true);
-      } else {
-        setTab('imports');
-      }
-      return;
-    }
     if (stageKey === 'structure') {
       onNavigate({ view: 'core', clientId: client.id, section: 'properties' });
       return;
     }
     if (stageKey === 'people') {
       onNavigate({ view: 'core', clientId: client.id, section: 'people' });
+      return;
+    }
+    if (stageKey === 'finances') {
+      setTab('initialization');
       return;
     }
     if (stageKey === 'operations') {
@@ -303,93 +327,98 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
     setToast('Responsables y fecha de corte actualizados.');
   };
 
-  const declareManualDataEntry = () => {
-    if (!onboardingCase) return;
-    const now = new Date().toISOString();
-    const today = now.slice(0, 10);
-    const totalUnitsAndPeople =
-      onboardingCase.counts.apartments +
-      onboardingCase.counts.townhouses +
-      onboardingCase.counts.commercialUnits +
-      onboardingCase.counts.people;
-
-    updateCase(current => {
-      const alreadyHasManual = current.batches.some(b => b.sourceType === 'manual');
-      const newBatches = alreadyHasManual
-        ? current.batches
-        : [
-            {
-              id: onboardingId('batch'),
-              clientId: current.clientId,
-              sourceType: 'manual' as MigrationSourceType,
-              fileName: 'Levantamiento directo en Núcleo CASA',
-              sourceLabel: 'Carga manual desde cero',
-              periodFrom: current.historicalFrom || today,
-              periodTo: current.historicalTo || today,
-              rowCount: totalUnitsAndPeople || 1,
-              tableCount: 2,
-              status: 'imported' as MigrationBatchStatus,
-              checksum: 'MANUAL_ENTRY_DIRECT',
-              registeredAt: now,
-              notes: 'Comunidad configurada mediante carga manual directa sin archivo legacy.',
-            },
-            ...current.batches,
-          ];
-
-      return {
-        ...current,
-        sourceSystem: current.sourceSystem || 'Carga manual directa',
-        historicalFrom: current.historicalFrom || today,
-        historicalTo: current.historicalTo || today,
-        status: 'configuring',
-        batches: newBatches,
-        updatedAt: now,
-      };
-    });
-    setToast('Carga manual declarada. La etapa de fuentes ha sido autorizada.');
+  const startInitialization = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!client) return;
+    const form = new FormData(event.currentTarget);
+    setInitializationStarting(true);
+    setInitializationFormError('');
+    try {
+      if (!client.communityId) throw new Error('La comunidad seleccionada todavía no tiene un contexto operativo configurado.');
+      const accessToken = RootSession.token();
+      if (!accessToken) throw new Error('La sesión ROOT no está autenticada.');
+      const context = await CasaAuthService.selectContext(accessToken, client.communityId);
+      if (!context.success) throw new Error(context.error);
+      RootSession.updateTokens(context.data.accessToken, RootSession.refreshToken());
+      const response = await authorizedRequest<InitializationSummary>({
+        method: 'POST',
+        url: '/accounting/initialization',
+        data: {
+          cutoverDate: String(form.get('cutoverDate')),
+          historyFrom: String(form.get('historyFrom')),
+          historyTo: String(form.get('historyTo')),
+        },
+      });
+      setInitializationId(response.data.id);
+      setInitializationCase(response.data);
+      localStorage.setItem(`casa_initialization_${selectedClientId}`, response.data.id);
+      setShowInitializationStart(false);
+      setTab('initialization');
+      setToast('Expediente de inicialización creado. Ya puedes cargar avisos, pagos, saldos y cuentas por pagar.');
+    } catch (error) {
+      setInitializationFormError(error instanceof Error ? error.message : 'No fue posible iniciar la inicialización.');
+    } finally {
+      setInitializationStarting(false);
+    }
   };
 
-  const registerSource = (event: FormEvent<HTMLFormElement>) => {
+  const loadInitializationRows = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!onboardingCase) return;
-    const form = new FormData(event.currentTarget);
-    const sourceType = String(form.get('sourceType')) as MigrationSourceType;
-    const isManual = sourceType === 'manual';
-    const file = form.get('file');
-    const fileName = isManual
-      ? 'Levantamiento directo en Núcleo CASA'
-      : (file instanceof File && file.name ? file.name : String(form.get('fileName')).trim());
-    const now = new Date().toISOString();
-    const today = now.slice(0, 10);
-
-    updateCase(current => ({
-      ...current,
-      sourceSystem: current.sourceSystem || (isManual ? 'Carga manual directa' : sourceTypeLabel[sourceType]),
-      historicalFrom: current.historicalFrom || String(form.get('periodFrom')) || today,
-      historicalTo: current.historicalTo || String(form.get('periodTo')) || today,
-      status: 'configuring',
-      batches: [
-        {
-          id: onboardingId('batch'),
-          clientId: current.clientId,
-          sourceType,
-          fileName: fileName || 'Archivo por confirmar',
-          sourceLabel: isManual ? 'Carga manual desde cero' : (String(form.get('sourceLabel')).trim() || 'Fuente registrada'),
-          periodFrom: String(form.get('periodFrom')) || today,
-          periodTo: String(form.get('periodTo')) || today,
-          rowCount: isManual ? (current.counts.apartments + current.counts.townhouses + current.counts.commercialUnits + current.counts.people) : 0,
-          tableCount: isManual ? 2 : 0,
-          status: isManual ? 'imported' : 'registered',
-          checksum: isManual ? 'MANUAL_ENTRY_DIRECT' : '',
-          registeredAt: now,
-          notes: isManual ? 'Configuración realizada mediante carga manual en el sistema.' : String(form.get('notes')).trim(),
+    if (!initializationId) { setInitializationFormError('Primero crea el expediente de inicialización.'); return; }
+    try {
+      const form = new FormData(event.currentTarget);
+      const kind = String(form.get('kind'));
+      const propertyId = String(form.get('propertyId') || '').trim();
+      const vendorId = String(form.get('vendorId') || '').trim();
+      const rows = [{
+        kind,
+        externalRef: String(form.get('externalRef')).trim(),
+        propertyId: propertyId || undefined,
+        vendorId: vendorId || undefined,
+        eventDate: String(form.get('eventDate')),
+        description: String(form.get('description')).trim(),
+        amount: Number(form.get('amount')),
+        currency: String(form.get('currency')),
+        metadata: {
+          periodKey: String(form.get('periodKey') || '').trim() || undefined,
+          debitAccountId: String(form.get('debitAccountId')).trim(),
+          creditAccountId: String(form.get('creditAccountId')).trim(),
+          receivableAccountId: String(form.get('debitAccountId')).trim(),
+          billingIncomeAccountId: String(form.get('creditAccountId')).trim(),
         },
-        ...current.batches,
-      ],
-      updatedAt: now,
-    }));
-    setShowSourceModal(false);
-    setToast(isManual ? 'Carga manual declarada correctamente.' : 'Fuente registrada. El archivo aún no ha sido extraído.');
+      }];
+      if (!rows[0].externalRef || !rows[0].description || !rows[0].eventDate || !Number.isFinite(rows[0].amount) || rows[0].amount <= 0) throw new Error('Completa referencia, fecha, descripción y monto válido.');
+      await authorizedRequest({ method: 'POST', url: `/accounting/initialization/${initializationId}/rows`, data: { rows } });
+      setShowInitializationRows(false);
+      setToast('Registro cargado. Ahora puedes agregar otro o validar la inicialización.');
+    } catch (error) { setInitializationFormError(error instanceof Error ? error.message : 'No fue posible cargar las filas.'); }
+  };
+
+  const saveOwnerOpeningBalance = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    if (!initializationId) { setInitializationFormError('Primero crea el expediente de inicialización financiera.'); return; }
+    const form = new FormData(formElement);
+    const signedBalance = Number(form.get('signedBalance'));
+    const propertyId = String(form.get('propertyId') || '');
+    const cutoverDate = initializationCase?.cutoverDate?.slice(0, 10) || '';
+    if (!propertyId || !cutoverDate || !Number.isFinite(signedBalance)) {
+      setInitializationFormError('Selecciona el apartamento e indica el saldo final, incluso si es cero. La fecha de corte se toma del expediente; recarga esta sección si no aparece.');
+      return;
+    }
+    try {
+      const response = await authorizedRequest<InitializationSummary>({
+        method: 'POST', url: `/accounting/initialization/${initializationId}/rows`, data: { rows: [{
+          kind: 'OWNER_BALANCE', externalRef: `OPENING-${propertyId}-${cutoverDate}`, propertyId, eventDate: cutoverDate,
+          description: String(form.get('description') || 'Saldo inicial del propietario').trim(), amount: Math.abs(signedBalance), currency: String(form.get('currency')),
+          metadata: { signedBalance },
+        }] },
+      });
+      setInitializationCase(response.data);
+      setInitializationFormError('');
+      setToast(signedBalance < 0 ? 'Saldo a favor guardado. CASA lo clasificará como anticipo al contabilizar.' : signedBalance === 0 ? 'Apartamento registrado como solvente al corte.' : 'Saldo pendiente guardado como cuenta por cobrar inicial.');
+      formElement.reset();
+    } catch (error) { setInitializationFormError(error instanceof Error ? error.message : 'No fue posible guardar el saldo inicial.'); }
   };
 
   const handleNavigateToResolve = (finding: ValidationFinding) => {
@@ -436,9 +465,7 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
 
   const tabs: Array<{ id: OnboardingTab; label: string }> = [
     { id: 'roadmap', label: 'Ruta de incorporación' },
-    demoMode
-      ? { id: 'sources', label: 'Fuentes y lotes · demo' }
-      : { id: 'imports', label: 'Asistente de importación' },
+    { id: 'initialization', label: 'Inicialización financiera' },
     { id: 'validation', label: `Validación (${openCritical + openWarnings})` },
   ];
 
@@ -560,25 +587,49 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
         </section>
       )}
 
-      {tab === 'sources' && onboardingCase && (
-        <section className="rounded-[1.6rem] border border-[#071a33]/8 bg-white shadow-[0_16px_45px_rgba(7,26,51,.04)]">
-          <header className="flex flex-col gap-4 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
-            <div><p className="text-xs font-bold uppercase tracking-[.16em] text-[#9a742b]">Custodia y trazabilidad</p><h3 className="mt-2 text-xl font-semibold">Fuentes y lotes de migración</h3><p className="mt-1 text-sm text-slate-500">Puedes migrar un archivo legacy o declarar la creación de datos de forma manual.</p></div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button type="button" onClick={declareManualDataEntry} className="inline-flex items-center justify-center gap-2 rounded-full border border-[#071a33]/20 bg-white px-4 py-3 text-sm font-bold text-[#071a33] hover:border-[#b08a3c]"><FileSpreadsheet size={16} />Declarar carga manual desde cero</button>
-              <button type="button" onClick={() => setShowSourceModal(true)} className="inline-flex items-center justify-center gap-2 rounded-full bg-[#071a33] px-5 py-3 text-sm font-bold text-white"><Plus size={16} />Registrar fuente</button>
+      {tab === 'initialization' && onboardingCase && (
+        <section className="flex flex-col gap-5">
+          <section className="order-1 rounded-[1.6rem] bg-[#071a33] p-6 text-white shadow-[0_18px_50px_rgba(7,26,51,.14)] sm:p-8">
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+              <div><p className="text-xs font-bold uppercase tracking-[.16em] text-[#e4c26f]">Etapa 04 · Control guiado</p><h3 className="mt-2 text-2xl font-semibold">Inicialización financiera</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-white/65">CASA verifica qué existe realmente y te lleva en orden desde la estructura hasta el asiento de apertura. Nada se marca completo por apariencia.</p><div className="mt-5 flex flex-wrap gap-3"><button type="button" onClick={() => { setInitializationFormError(''); setShowInitializationStart(true); }} className="inline-flex items-center gap-2 rounded-full bg-[#e4c26f] px-5 py-3 text-sm font-bold text-[#071a33] hover:bg-white"><Plus size={16} /> Iniciar inicialización</button><button type="button" onClick={() => { setInitializationFormError(''); setShowInitializationRows(true); }} className="inline-flex items-center gap-2 rounded-full border border-white/25 px-5 py-3 text-sm font-bold text-white hover:bg-white/10"><UploadCloud size={16} /> Cargar datos históricos</button></div></div>
+              <div className="shrink-0 rounded-2xl bg-white/10 px-4 py-3 text-center"><p className="text-2xl font-semibold text-[#e4c26f]">{initializationComplete}/{initializationChecks.length}</p><p className="text-xs text-white/55">controles completos</p></div>
             </div>
-          </header>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[920px] text-left text-sm">
-              <thead className="border-b border-slate-100 bg-[#fbfaf7] text-[11px] font-bold uppercase tracking-[.13em] text-slate-400"><tr><th className="px-6 py-3">Fuente</th><th className="px-4 py-3">Archivo</th><th className="px-4 py-3">Período</th><th className="px-4 py-3">Volumen</th><th className="px-4 py-3">Estado</th><th className="px-6 py-3">Registro</th></tr></thead>
-              <tbody>{onboardingCase.batches.map(batch => <tr key={batch.id} className="border-b border-slate-100"><td className="px-6 py-4"><p className="font-bold">{sourceTypeLabel[batch.sourceType]}</p><p className="mt-1 text-xs text-slate-400">{batch.sourceLabel}</p></td><td className="px-4 py-4"><p className="font-mono text-xs">{batch.fileName}</p><p className="mt-1 text-xs text-slate-400">{batch.checksum ? `SHA-256 ${batch.checksum.slice(0, 12)}…` : 'Hash pendiente'}</p></td><td className="px-4 py-4 text-xs text-slate-500">{formatDate(batch.periodFrom)}<br />{formatDate(batch.periodTo)}</td><td className="px-4 py-4"><p className="font-bold">{batch.rowCount.toLocaleString('es-VE')} filas</p><p className="mt-1 text-xs text-slate-400">{batch.tableCount} tablas</p></td><td className="px-4 py-4"><span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700">{batchStatusLabel[batch.status]}</span></td><td className="px-6 py-4 text-xs text-slate-400">{new Intl.DateTimeFormat('es-VE', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(batch.registeredAt))}</td></tr>)}</tbody>
-            </table>
-          </div>
+          </section>
+          {initializationView !== 'overview' && (
+            <section className="order-4 rounded-[1.6rem] border border-[#071a33]/10 bg-white p-6 shadow-[0_16px_45px_rgba(7,26,51,.05)] sm:p-8">
+              <button type="button" onClick={() => setInitializationView('overview')} className="inline-flex items-center gap-2 text-sm font-bold text-[#8a6726]"><ArrowRight className="rotate-180" size={16} /> Volver a la ruta de inicialización</button>
+              {initializationView === 'owner-balances' && <form onSubmit={saveOwnerOpeningBalance}><p className="mt-6 text-xs font-bold uppercase tracking-[.16em] text-[#9a742b]">Paso 01 · Saldo de apertura</p><h3 className="mt-2 text-2xl font-semibold">Saldos iniciales por propietario</h3><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Carga la posición final al día de corte. Un monto positivo es deuda; un monto negativo se reconoce automáticamente como saldo a favor y se lleva a anticipos. No tienes que cargar avisos ni pagos antiguos para usar esta modalidad.</p>{initializationFormError && <div role="alert" className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{initializationFormError}</div>}<div className="mt-6 grid gap-5 sm:grid-cols-2"><Field label="Apartamento"><select name="propertyId" className={inputClass} required><option value="">Selecciona un apartamento</option>{(client?.properties ?? []).map(property => { const hasOpeningBalance = openingBalancePropertyIds.has(property.id); return <option key={property.id} value={property.id} disabled={hasOpeningBalance}>{property.code}{hasOpeningBalance ? ' · saldo inicial guardado' : ''}</option>; })}</select></Field><Field label="Saldo al corte" hint="Ej.: 250 si debe USD 250; -50 si tiene USD 50 a favor."><input name="signedBalance" type="number" step="0.01" className={inputClass} placeholder="0.00" required /></Field><div className="rounded-xl border border-[#b08a3c]/25 bg-[#fffaf0] px-4 py-3 text-sm text-slate-700"><p className="font-semibold text-[#071a33]">Fecha de corte del expediente</p><p className="mt-1">{initializationCase?.cutoverDate ? formatDate(initializationCase.cutoverDate.slice(0, 10)) : 'Cargando fecha del expediente…'}</p><p className="mt-1 text-xs leading-5 text-slate-500">Esta fecha ya se definió al crear el expediente y se aplicará automáticamente a este saldo.</p></div><Field label="Moneda"><select name="currency" className={inputClass}><option value="USD">USD</option><option value="VES">VES</option></select></Field></div><Field label="Observación" hint="Opcional: referencia al estado de cuenta entregado por el condominio."><input name="description" className={inputClass} placeholder="Ej. Estado final legacy al 31/08" /></Field><button type="submit" disabled={!initializationCase?.cutoverDate} className="mt-6 rounded-full bg-[#071a33] px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">Guardar saldo de apertura</button></form>}
+              {initializationView === 'payables' && <><p className="mt-6 text-xs font-bold uppercase tracking-[.16em] text-[#9a742b]">Paso 02 · Obligaciones pendientes</p><h3 className="mt-2 text-2xl font-semibold">Cuentas por pagar</h3><p className="mt-2 text-sm leading-6 text-slate-600">Registra las facturas y compromisos que el condominio ya debía al día de corte.</p><div className="mt-6 grid gap-5 sm:grid-cols-2"><Field label="Proveedor"><input className={inputClass} placeholder="Seleccionar o crear proveedor" /></Field><Field label="Factura o referencia"><input className={inputClass} placeholder="Ej. FAC-1024" /></Field><Field label="Monto pendiente"><input type="number" step="0.01" className={inputClass} /></Field><Field label="Vencimiento"><input type="date" className={inputClass} /></Field></div><button type="button" className="mt-6 rounded-full bg-[#071a33] px-5 py-3 text-sm font-bold text-white">Guardar cuenta por pagar</button></>}
+              {initializationView === 'banks' && <><p className="mt-6 text-xs font-bold uppercase tracking-[.16em] text-[#9a742b]">Paso 03 · Tesorería</p><h3 className="mt-2 text-2xl font-semibold">Saldos de bancos y fondos</h3><p className="mt-2 text-sm leading-6 text-slate-600">Registra el saldo conciliado de cada cuenta bancaria, caja y fondo al día de corte.</p></>}
+              {initializationView === 'notices' && <><p className="mt-6 text-xs font-bold uppercase tracking-[.16em] text-[#9a742b]">Historia opcional · primero avisos</p><h3 className="mt-2 text-2xl font-semibold">Avisos de cobro históricos</h3><p className="mt-2 text-sm leading-6 text-slate-600">Usa esta página solo si deseas conservar detalle histórico. Carga primero el aviso consolidado por mes; luego sus cargos por categoría y la asignación a apartamentos.</p></>}
+              {initializationView === 'payments' && <><p className="mt-6 text-xs font-bold uppercase tracking-[.16em] text-[#9a742b]">Historia opcional · después pagos</p><h3 className="mt-2 text-2xl font-semibold">Pagos históricos</h3><p className="mt-2 text-sm leading-6 text-slate-600">Carga pagos después de los avisos. CASA los aplica a la deuda y convierte automáticamente cualquier excedente en saldo a favor.</p></>}
+              {initializationView === 'reconciliation' && <><p className="mt-6 text-xs font-bold uppercase tracking-[.16em] text-[#9a742b]">Paso final</p><h3 className="mt-2 text-2xl font-semibold">Conciliación y asiento de apertura</h3><p className="mt-2 text-sm leading-6 text-slate-600">Compara los saldos por propietario, cuentas por pagar, bancos y contabilidad antes de aplicar la apertura.</p></>}
+            </section>
+          )}
+          <section className="order-2 rounded-[1.6rem] border-2 border-[#c99b3d]/40 bg-[#fffaf0] p-5 shadow-[0_16px_45px_rgba(7,26,51,.05)] sm:p-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div><p className="text-xs font-bold uppercase tracking-[.16em] text-[#9a742b]">Carga inicial</p><h3 className="mt-2 text-xl font-semibold text-[#071a33]">¿Dónde cargo los saldos?</h3><p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">Aquí comienza la carga real. Selecciona una categoría para preparar el lote que quedará asociado al expediente de esta comunidad.</p></div>
+              <button type="button" onClick={() => { setInitializationFormError(''); setShowInitializationRows(true); }} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-[#071a33] px-5 py-3 text-sm font-bold text-white"><UploadCloud size={17} /> Cargar saldos y movimientos</button>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[
+              ['owner-balances', '1. Saldos de apertura', 'Deuda, solvencia o saldo a favor por apartamento'],
+              ['payables', '2. Cuentas por pagar', 'Facturas y compromisos pendientes'],
+              ['banks', '3. Bancos y fondos', 'Saldos conciliados al corte'],
+              ['reconciliation', '4. Conciliar y abrir', 'Validar antes de contabilizar'],
+              ['notices', 'Historia opcional: avisos', 'Primero avisos, si se conservará detalle'],
+              ['payments', 'Historia opcional: pagos', 'Después de los avisos'],
+            ].map(([view, label, detail]) => <button key={label} type="button" onClick={() => setInitializationView(view as InitializationView)} className="rounded-2xl border border-[#071a33]/10 bg-white p-4 text-left transition hover:border-[#c99b3d] hover:shadow-sm"><p className="text-sm font-bold text-[#071a33]">{label}</p><p className="mt-1 text-xs leading-5 text-slate-500">{detail}</p><span className="mt-3 inline-flex text-[10px] font-bold uppercase tracking-[.12em] text-[#9a742b]">Abrir sección →</span></button>)}</div>
+          </section>
+          <section className="order-3 rounded-[1.6rem] border border-[#071a33]/8 bg-white p-4 shadow-[0_16px_45px_rgba(7,26,51,.04)]">
+            <div className="flex items-start gap-3 border-b border-slate-100 pb-3"><ClipboardList className="mt-0.5 text-[#9a742b]" size={19} /><div><h3 className="font-semibold">Guía de inicialización</h3><p className="mt-0.5 text-xs text-slate-500">Sigue este orden para evitar diferencias.</p></div></div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{initializationChecks.map(check => {
+              const tone = check.status === 'complete' ? 'border-emerald-200 bg-emerald-50/60' : check.status === 'warning' ? 'border-amber-200 bg-amber-50/60' : 'border-slate-200 bg-[#fcfbf8]';
+              return <article key={check.id} className={`flex gap-2 rounded-xl border p-3 ${tone}`}><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white text-xs font-bold text-[#9a742b] shadow-sm">{check.order}</span><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-1"><h4 className="truncate text-xs font-bold text-[#071a33]">{check.label}</h4><span className={`text-[10px] font-bold ${check.status === 'complete' ? 'text-emerald-700' : check.status === 'warning' ? 'text-amber-700' : 'text-slate-500'}`}>{check.status === 'complete' ? 'OK' : check.status === 'warning' ? 'Rev.' : 'Pend.'}</span></div><p className="mt-1 line-clamp-2 text-[11px] leading-4 text-slate-500">{check.evidence}</p></div></article>;
+            })}</div>
+          </section>
+          <section className="rounded-[1.6rem] border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950"><strong>Regla de seguridad:</strong> los avisos y pagos históricos se cargan antes de calcular el saldo inicial. El asiento de apertura solo se habilita cuando los saldos por apartamento coinciden con las cuentas contables; las cuentas agrupadoras únicamente suman sus hijas.</section>
         </section>
       )}
-
-      {tab === 'imports' && client && <ImportAssistant clientId={client.id} />}
 
       {tab === 'validation' && onboardingCase && (
         <section className="grid gap-5 xl:grid-cols-[1fr_340px]">
@@ -690,21 +741,7 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
         </section>
       )}
 
-      {showSourceModal && (
-        <Modal title="Registrar fuente de información" copy="Crea el registro de custodia. Puedes seleccionar Carga manual si estás construyendo la comunidad directamente en CASA." onClose={() => setShowSourceModal(false)}>
-          <form onSubmit={registerSource}>
-            <div className="grid gap-5 sm:grid-cols-2">
-              <Field label="Tipo de fuente"><select name="sourceType" className={inputClass} defaultValue="manual">{Object.entries(sourceTypeLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
-              <Field label="Descripción"><input name="sourceLabel" className={inputClass} required placeholder="Carga manual en Núcleo CASA" defaultValue="Carga manual desde cero" /></Field>
-              <Field label="Seleccionar archivo (opcional para carga manual)" span hint="Si seleccionaste Carga manual, no necesitas adjuntar archivos."><label className="mt-2 flex cursor-pointer items-center justify-center gap-3 rounded-xl border border-dashed border-slate-300 bg-[#fbfaf7] px-4 py-5 text-sm font-semibold text-slate-500 hover:border-[#b08a3c]"><UploadCloud size={19} /><span>Elegir archivo local (opcional)</span><input name="file" type="file" className="sr-only" accept=".mdb,.accdb,.xlsx,.xls,.csv" /></label><input name="fileName" className={inputClass} placeholder="O escribe el nombre si aún no lo tienes" /></Field>
-              <Field label="Historia desde"><input name="periodFrom" type="date" className={inputClass} defaultValue={new Date().toISOString().slice(0, 10)} required /></Field>
-              <Field label="Historia hasta"><input name="periodTo" type="date" className={inputClass} defaultValue={new Date().toISOString().slice(0, 10)} required /></Field>
-              <Field label="Notas de custodia" span><textarea name="notes" className={`${inputClass} min-h-24 resize-y`} placeholder="Detalles de la fuente o notas de carga manual en la comunidad…" /></Field>
-            </div>
-            <button type="submit" className="mt-7 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white"><Database size={17} />Registrar fuente</button>
-          </form>
-        </Modal>
-      )}
+
 
       {guideStageKey && guideStage && guideValidation && (
         <Modal
@@ -770,16 +807,7 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
             </button>
           ) : (
             <div className="mt-6 space-y-3">
-              {guideStageKey === 'sources' && !onboardingCase?.batches.some(b => b.sourceType === 'manual') && (
-                <button
-                  type="button"
-                  onClick={declareManualDataEntry}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-amber-300 bg-amber-50 px-6 py-3 text-sm font-bold text-amber-900 hover:bg-amber-100 transition"
-                >
-                  <FileSpreadsheet size={17} />
-                  Declarar carga manual desde cero (Sin archivo legacy)
-                </button>
-              )}
+
               <button type="button" onClick={handleGuideAction} className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#071a33] px-6 py-3.5 text-sm font-bold text-white">
                 {guideStage.status === 'in-progress' && guideValidation.passed ? <BadgeCheck size={17} /> : <ArrowRight size={17} />}
                 Completar etapa
@@ -821,6 +849,34 @@ export default function OnboardingModule({ clients, demoMode, onNavigate }: { cl
             <button type="button" onClick={() => { setShowOperationsModal(false); if (client) onNavigate({ view: 'core', clientId: client.id, section: 'banking' }); }} className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 px-6 py-3.5 text-sm font-bold text-[#071a33]">
               <ArrowRight size={17} /> Configurar tesorería
             </button>
+          </form>
+        </Modal>
+      )}
+
+      {showInitializationStart && onboardingCase && (
+        <Modal title="Iniciar inicialización financiera" copy="Define el corte y la ventana de historia que CASA conservará antes de cargar cualquier aviso, pago o saldo." onClose={() => !initializationStarting && setShowInitializationStart(false)}>
+          <form onSubmit={startInitialization} className="space-y-5">
+            {initializationFormError && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{initializationFormError}</div>}
+            <Field label="Fecha de corte" hint="Es el día en que CASA toma el control. El sistema anterior queda cerrado el día anterior; los saldos se calcularán hasta ese corte."><input name="cutoverDate" type="date" className={inputClass} required /></Field>
+            <div className="grid gap-5 sm:grid-cols-2"><Field label="Historia desde" hint="Primer día de la historia legacy que quieres conservar y consultar dentro de CASA."><input name="historyFrom" type="date" className={inputClass} required /></Field><Field label="Historia hasta" hint="Último día de la historia que se importará. Normalmente coincide con el día anterior a la fecha de corte."><input name="historyTo" type="date" className={inputClass} required /></Field></div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-950">Después de crear el expediente podrás cargar filas históricas. La contabilidad no se modifica hasta validar y aplicar la inicialización.</div>
+            <button type="submit" disabled={initializationStarting} className="w-full rounded-full bg-[#071a33] px-5 py-3.5 text-sm font-bold text-white disabled:opacity-50">{initializationStarting ? 'Creando expediente…' : 'Crear expediente y comenzar carga'}</button>
+          </form>
+        </Modal>
+      )}
+
+      {showInitializationRows && onboardingCase && (
+        <Modal title="Cargar datos históricos" copy="Registra un aviso, pago, saldo o cuenta por pagar con sus datos de negocio. El sistema lo asociará al expediente de esta comunidad." onClose={() => setShowInitializationRows(false)}>
+          <form onSubmit={loadInitializationRows} className="space-y-5">
+            {initializationFormError && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{initializationFormError}</div>}
+            <div className="grid gap-5 sm:grid-cols-2"><Field label="Tipo de registro"><select name="kind" className={inputClass} required><option value="OWNER_BALANCE">Saldo del propietario</option><option value="OWNER_PAYMENT">Pago histórico</option><option value="CHARGE_NOTICE">Aviso de cobro</option><option value="PAYABLE">Cuenta por pagar</option><option value="BANK_BALANCE">Saldo bancario</option></select></Field><Field label="Apartamento"><select name="propertyId" className={inputClass}><option value="">Selecciona apartamento</option>{(client?.properties ?? []).map(property => <option key={property.id} value={property.id}>{property.code}</option>)}</select></Field></div>
+            <div className="grid gap-5 sm:grid-cols-2"><Field label="Referencia"><input name="externalRef" className={inputClass} required placeholder="Ej. AV-JUL-001" /></Field><Field label="Fecha"><input name="eventDate" type="date" className={inputClass} required /></Field></div>
+            <Field label="Descripción"><input name="description" className={inputClass} required placeholder="Describe el aviso, pago o saldo" /></Field>
+            <div className="grid gap-5 sm:grid-cols-2"><Field label="Monto"><input name="amount" type="number" min="0.01" step="0.01" className={inputClass} required /></Field><Field label="Moneda"><select name="currency" className={inputClass}><option value="USD">USD</option><option value="VES">VES</option><option value="EUR">EUR</option></select></Field></div>
+            <div className="grid gap-5 sm:grid-cols-2"><Field label="Cuenta de débito" hint="Selecciona la cuenta de movimiento que recibe el débito."><input name="debitAccountId" className={inputClass} required placeholder="Código o ID de cuenta" /></Field><Field label="Cuenta de crédito" hint="Selecciona la cuenta de movimiento que recibe el crédito."><input name="creditAccountId" className={inputClass} required placeholder="Código o ID de cuenta" /></Field></div>
+            <Field label="Período del aviso" hint="Solo requerido para avisos históricos, por ejemplo 2026-07."><input name="periodKey" className={inputClass} placeholder="AAAA-MM" pattern="\d{4}-(0[1-9]|1[0-2])" /></Field>
+            <Field label="Proveedor (para cuentas por pagar)" hint="Usa el ID del proveedor registrado en CASA."><input name="vendorId" className={inputClass} placeholder="ID del proveedor" /></Field>
+            <button type="submit" className="w-full rounded-full bg-[#071a33] px-5 py-3.5 text-sm font-bold text-white">Guardar registro pendiente de validación</button>
           </form>
         </Modal>
       )}

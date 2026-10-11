@@ -202,17 +202,48 @@ No instanciar servicios manualmente con `new`.
 
 ## 10. Seguridad multi-comunidad
 
-Toda operación comunitaria debe verificar:
-- Usuario autenticado.
-- Comunidad seleccionada.
-- Acceso a esa comunidad.
-- Header `x-community-id`.
-- Scope requerido.
-- Pertenencia del recurso a la comunidad.
 
-Nunca consultar o modificar un recurso solo por `id` cuando también corresponda filtrar por `communityId`.
+Toda operación relacionada con una comunidad debe verificar:
 
-Una fuga de datos entre comunidades es un error crítico.
+* Usuario autenticado.
+* Comunidad seleccionada dentro del contexto autenticado.
+* Acceso vigente del usuario a esa comunidad.
+* Scope o permiso requerido.
+* Espacio de trabajo autorizado cuando corresponda.
+* Pertenencia del recurso a la comunidad seleccionada.
+
+El `communityId` autoritativo debe obtenerse exclusivamente del contexto autenticado y validado por el backend.
+
+Nunca confiar como fuente autoritativa en un `communityId` recibido mediante:
+
+* Body.
+* Query parameters.
+* Route parameters.
+* Headers personalizados.
+* Local storage.
+* Session storage.
+* Estado del frontend.
+
+Cuando una ruta, filtro o solicitud incluya un `communityId`, debe compararse contra el contexto autenticado antes de utilizarse. Una discrepancia debe rechazarse.
+
+Nunca consultar, actualizar o eliminar un recurso únicamente por `id` cuando el recurso pertenezca a una comunidad. La consulta debe incluir también el `communityId` autenticado.
+
+Ejemplo obligatorio:
+
+`where: { id: resourceId, communityId: auth.communityId }`
+
+No utilizar:
+
+`where: { id: resourceId }`
+
+cuando el recurso sea comunitario.
+
+El frontend puede mostrar la comunidad seleccionada, pero no determina la autorización. Toda autorización debe ser aplicada nuevamente por la API.
+
+Los usuarios de plataforma con privilegios globales también deben operar sobre una comunidad explícitamente seleccionada cuando accedan a datos comunitarios. Toda operación global o cambio de contexto debe quedar auditado.
+
+Una fuga, consulta o modificación de información entre comunidades es un error crítico de seguridad y debe detener la tarea hasta corregirse.
+
 
 ## 11. Prisma y migraciones
 
@@ -270,21 +301,14 @@ No ocultar errores mediante:
 
 No instalar dependencias, actualizar paquetes, reescribir lockfiles, modificar `.env`, eliminar funcionalidades ni cambiar contratos públicos sin autorización.
 
-## 14. package.json del frontend
+## 14. Dependencias y configuración
 
-Existe evidencia de que `casa-home/package.json` pudo ser reemplazado por un archivo de Electron.
+No instalar, eliminar ni actualizar dependencias; modificar `package.json`, lockfiles, scripts, archivos `.env` o configuraciones del proyecto sin autorización expresa.
 
-Antes de instalar o compilar:
-- Leer `package.json`.
-- Confirmar que pertenece a `casa-home`.
-- Comparar con `package-lock.json`.
-- Revisar Git.
+Antes de proponer un cambio, comprobar si la necesidad puede resolverse con el stack, las dependencias o las utilidades existentes.
 
-Si contiene `"name": "@opencode-ai/desktop"`:
-- No ejecutar `npm install`.
-- No sobrescribir `package-lock.json`.
-- No restaurar automáticamente.
-- Informar el bloqueo.
+Si `package.json` y el lockfile son inconsistentes o muestran cambios ajenos al proyecto, detenerse, revisar Git e informar sin sobrescribirlos.
+
 
 ## 15. Validación obligatoria
 

@@ -17,6 +17,7 @@ import {
   Landmark,
   LoaderCircle,
   Plus,
+  Printer,
   ReceiptText,
   Search,
   Send,
@@ -34,6 +35,7 @@ import {
   type VendorRecord,
 } from '../../services/CommunityWorkspaceService';
 import { ExpenseCatalogPanel } from './ExpenseCatalogPanel';
+import ChargeNotice, { type ChargeNoticeProps } from '../owner/ChargeNotice';
 
 const inputClass =
   'w-full rounded-xl border border-[#071a33]/12 bg-white px-3.5 py-3 text-sm outline-none transition focus:border-[#b08a3c] focus:ring-2 focus:ring-[#b08a3c]/15';
@@ -45,6 +47,7 @@ type Dialog =
   | 'account'
   | 'payment'
   | 'notice'
+  | 'print'
   | null;
 type View = 'catalog' | 'expenses' | 'expense-entry' | 'payments' | 'notices';
 type ComponentKey = 'reserve' | 'provision' | 'extra' | 'emergency';
@@ -69,6 +72,8 @@ export function BillingWorkspacePanel({
   const [view, setView] = useState<View>('expenses');
   const [periodId, setPeriodId] = useState('');
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [printMode, setPrintMode] = useState<'GENERAL' | 'PROPERTY'>('GENERAL');
+  const [printPropertyId, setPrintPropertyId] = useState('');
   const [expenseSource, setExpenseSource] =
     useState<'BANK_ACCOUNT' | 'CASH' | 'OTHER'>('BANK_ACCOUNT');
   const [expenseBankId, setExpenseBankId] = useState('');
@@ -382,7 +387,18 @@ export function BillingWorkspacePanel({
 
   return (
     <div>
-      <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+      <WorkflowSteps
+        hasCategories={Boolean(
+          snapshot?.expenseCategories.some((category) =>
+            category._count.concepts > 0,
+          ),
+        )}
+        hasMonth={Boolean(period)}
+        hasExpenses={Boolean(period?.expenses.length)}
+        hasNotice={Boolean(period?.chargeNotice)}
+      />
+
+      <div className="mt-6 flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
         <div className="max-w-3xl">
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-[#9c7532]">
             Administración financiera · Partida doble
@@ -452,17 +468,6 @@ export function BillingWorkspacePanel({
           )}
         </div>
       </div>
-
-      <WorkflowSteps
-        hasCategories={Boolean(
-          snapshot?.expenseCategories.some((category) =>
-            category._count.concepts > 0,
-          ),
-        )}
-        hasMonth={Boolean(period)}
-        hasExpenses={Boolean(period?.expenses.length)}
-        hasNotice={Boolean(period?.chargeNotice)}
-      />
 
       <nav className="mt-7 flex w-full gap-1 overflow-x-auto rounded-2xl border border-[#071a33]/8 bg-white p-1.5 sm:w-fit">
         <ViewTab
@@ -593,6 +598,12 @@ export function BillingWorkspacePanel({
             periods={snapshot?.billingPeriods ?? []}
             selected={periodId}
             onSelect={setPeriodId}
+            onPrint={(id) => {
+              setPeriodId(id);
+              setPrintMode('GENERAL');
+              setPrintPropertyId('');
+              setDialog('print');
+            }}
           />
           <div className="min-w-0">
             {period ? (
@@ -623,7 +634,8 @@ export function BillingWorkspacePanel({
           wide={
             dialog === 'help' ||
             dialog === 'payment' ||
-            dialog === 'notice'
+            dialog === 'notice' ||
+            dialog === 'print'
           }
           onClose={() => setDialog(null)}
         >
@@ -649,6 +661,7 @@ export function BillingWorkspacePanel({
           {dialog === 'concept' && (
             <ConceptForm
               categories={snapshot?.expenseCategories ?? []}
+              expenseAccounts={expenseAccounts}
               saving={saving}
               onSubmit={(event) =>
                 void submit(
@@ -661,6 +674,7 @@ export function BillingWorkspacePanel({
                         name: String(form.get('name')).trim(),
                         description:
                           String(form.get('description')).trim() || undefined,
+                        defaultExpenseAccountId: String(form.get('defaultExpenseAccountId')) || undefined,
                       },
                     ),
                   'Concepto de gasto creado.',
@@ -783,6 +797,18 @@ export function BillingWorkspacePanel({
               }
             />
           )}
+          {dialog === 'print' && period && core && (
+            <NoticePrintOptions
+              period={period}
+              properties={core.properties.filter((property) => property.status === 'ACTIVE').sort((a, b) => a.code.localeCompare(b.code, 'es'))}
+              mode={printMode}
+              propertyId={printPropertyId}
+              onMode={setPrintMode}
+              onProperty={setPrintPropertyId}
+              core={core}
+              treasury={treasury}
+            />
+          )}
         </DialogFrame>
       )}
     </div>
@@ -828,23 +854,26 @@ function WorkflowSteps({
     },
   ];
   return (
-    <section className="mt-7 rounded-[1.5rem] border border-[#b08a3c]/20 bg-[#fffdf8] p-5">
-      <div className="flex items-center gap-2">
-        <CircleHelp size={18} className="text-[#9c7532]" />
-        <h3 className="font-semibold">Ruta recomendada</h3>
+    <section className="rounded-2xl border border-[#b08a3c]/20 bg-[#fffdf8] p-3 sm:p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <CircleHelp size={16} className="text-[#9c7532]" />
+          <h3 className="text-sm font-semibold">Ruta recomendada</h3>
+        </div>
+        <span className="text-[11px] font-semibold text-slate-500">Flujo de trabajo</span>
       </div>
-      <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
+      <div className="mt-3 grid gap-2 md:grid-cols-4">
         {steps.map((step) => (
           <div
             key={step.number}
-            className={`rounded-xl border p-4 ${
+            className={`rounded-xl border p-3 ${
               step.complete
                 ? 'border-emerald-200 bg-emerald-50'
                 : 'border-[#071a33]/8 bg-white'
             }`}
           >
             <div className="flex items-center justify-between">
-              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#071a33] text-xs font-bold text-white">
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#071a33] text-[11px] font-bold text-white">
                 {step.number}
               </span>
               {step.complete && (
@@ -853,8 +882,8 @@ function WorkflowSteps({
                 </span>
               )}
             </div>
-            <p className="mt-3 text-sm font-bold">{step.title}</p>
-            <p className="mt-1 text-xs leading-5 text-slate-500">
+            <p className="mt-2 text-xs font-bold leading-4">{step.title}</p>
+            <p className="mt-1 text-[11px] leading-4 text-slate-500">
               {step.detail}
             </p>
           </div>
@@ -968,10 +997,12 @@ function PeriodList({
   periods,
   selected,
   onSelect,
+  onPrint,
 }: {
   periods: BillingSnapshot['billingPeriods'];
   selected: string;
   onSelect: (id: string) => void;
+  onPrint: (id: string) => void;
 }) {
   return (
     <aside className="rounded-[1.5rem] border border-[#071a33]/8 bg-white p-5">
@@ -980,21 +1011,25 @@ function PeriodList({
       </p>
       <div className="mt-4 space-y-2">
         {periods.map((item) => (
-          <button
+          <div
             key={item.id}
-            onClick={() => onSelect(item.id)}
-            className={`w-full rounded-xl border px-4 py-3 text-left transition ${
+            className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition ${
               item.id === selected
                 ? 'border-[#b08a3c] bg-[#f5efe2]'
                 : 'border-[#071a33]/8 bg-[#fbfaf7]'
             }`}
           >
-            <p className="font-bold">{item.label}</p>
-            <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
-              <span>{item.periodKey}</span>
-              <span>{statusLabel(item.status)}</span>
-            </div>
-          </button>
+            <button type="button" onClick={() => onSelect(item.id)} className="min-w-0 flex-1 text-left">
+              <p className="truncate font-bold">{item.label}</p>
+              <div className="mt-1 flex items-center justify-between gap-2 text-xs text-slate-500">
+                <span>{item.periodKey}</span>
+                <span>{statusLabel(item.status)}</span>
+              </div>
+            </button>
+            <button type="button" onClick={() => onPrint(item.id)} title={`Imprimir aviso · ${item.label}`} aria-label={`Imprimir aviso · ${item.label}`} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[#071a33]/12 bg-white px-2.5 py-2 text-xs font-bold text-[#071a33] transition hover:border-[#b08a3c] hover:text-[#805d20]">
+              <Printer size={15} /> <span className="hidden sm:inline">Imprimir aviso</span>
+            </button>
+          </div>
         ))}
         {!periods.length && (
           <p className="rounded-xl border border-dashed border-slate-200 p-4 text-sm leading-6 text-slate-500">
@@ -1006,6 +1041,205 @@ function PeriodList({
   );
 }
 
+function NoticePrintOptions({
+  period,
+  properties,
+  mode,
+  propertyId,
+  onMode,
+  onProperty,
+  core,
+  treasury,
+}: {
+  period: BillingPeriodRecord;
+  properties: CoreSnapshot['properties'];
+  mode: 'GENERAL' | 'PROPERTY';
+  propertyId: string;
+  onMode: (mode: 'GENERAL' | 'PROPERTY') => void;
+  onProperty: (id: string) => void;
+  core: CoreSnapshot;
+  treasury: TreasurySnapshot | null;
+}) {
+  const selectedProperty = properties.find((item) => item.id === propertyId);
+  const hasSavedNotice = period.chargeNotice?.status === 'PREPARED' || period.chargeNotice?.status === 'ISSUED';
+  const canPrint = mode === 'GENERAL' || Boolean(selectedProperty?.currentAliquot);
+  const preview = useMemo(
+    () => canPrint ? buildChargeNoticePreview(period, core, treasury, mode, propertyId) : null,
+    [canPrint, core, mode, period, propertyId, treasury],
+  );
+  return (
+    <div className="space-y-5">
+      <p className="text-sm leading-6 text-slate-600">
+        Genera una vista previa imprimible del aviso con los egresos registrados hasta ahora. Puedes hacerlo antes de preparar o emitir el aviso.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button type="button" onClick={() => onMode('GENERAL')} className={`rounded-2xl border p-4 text-left transition ${mode === 'GENERAL' ? 'border-[#b08a3c] bg-[#fffaf0]' : 'border-slate-200 bg-white'}`}>
+          <span className="block text-sm font-bold text-[#071a33]">Vista general</span>
+          <span className="mt-1 block text-xs leading-5 text-slate-500">Gastos totales de la comunidad, sin distribuir por alícuota.</span>
+        </button>
+        <button type="button" onClick={() => onMode('PROPERTY')} className={`rounded-2xl border p-4 text-left transition ${mode === 'PROPERTY' ? 'border-[#b08a3c] bg-[#fffaf0]' : 'border-slate-200 bg-white'}`}>
+          <span className="block text-sm font-bold text-[#071a33]">Por inmueble</span>
+          <span className="mt-1 block text-xs leading-5 text-slate-500">Consulta la participación del inmueble según su alícuota.</span>
+        </button>
+      </div>
+      {mode === 'PROPERTY' && (
+        <label className="block text-sm font-bold">Selecciona el inmueble
+          <select value={propertyId} onChange={(event) => onProperty(event.target.value)} className={`${inputClass} mt-2`}>
+            <option value="">Seleccionar inmueble</option>
+            {properties.map((property) => <option key={property.id} value={property.id}>{property.code}{property.currentAliquot ? ` · ${money(Number(property.currentAliquot), 4)}%` : ' · Sin alícuota'}</option>)}
+          </select>
+        </label>
+      )}
+      {mode === 'PROPERTY' && selectedProperty && !selectedProperty.currentAliquot && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Este inmueble no tiene una alícuota configurada; no se puede calcular su participación.</p>
+      )}
+      {!period.expenses.length && !(hasSavedNotice && period.chargeNotice?.components.length) && (
+        <p className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">Este mes todavía no tiene gastos registrados. Puedes imprimir el aviso cuando agregues gastos.</p>
+      )}
+      {period.chargeNotice?.status === 'ISSUED' && <p className="rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">Aviso emitido: la vista por inmueble usará los montos guardados al emitirlo.</p>}
+      {period.chargeNotice?.status === 'PREPARED' && <p className="rounded-xl bg-sky-50 p-3 text-sm font-semibold text-sky-800">Aviso preparado: la vista por inmueble usará la distribución ya calculada.</p>}
+      {period.chargeNotice?.status !== 'ISSUED' && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Vista preliminar: todavía no es un aviso emitido.</p>
+      )}
+      {preview && (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <ChargeNotice {...preview} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function buildChargeNoticePreview(
+  period: BillingPeriodRecord,
+  core: CoreSnapshot,
+  treasury: TreasurySnapshot | null,
+  mode: 'GENERAL' | 'PROPERTY',
+  propertyId: string,
+): ChargeNoticeProps {
+  const rate = Number(period.bcvRate);
+  const savedNotice = period.chargeNotice?.status === 'PREPARED' || period.chargeNotice?.status === 'ISSUED'
+    ? period.chargeNotice
+    : null;
+  const property = core.properties.find((item) => item.id === propertyId);
+  const count = core.properties.filter((item) => item.status === 'ACTIVE').length;
+  const isProperty = mode === 'PROPERTY';
+  const aliquot = Number(property?.currentAliquot ?? 0);
+  const components = savedNotice?.components ?? [];
+  const toShareVes = (amountVes: number, allocationMethod: string) =>
+    allocationMethod === 'FIXED' ? amountVes / Math.max(1, count) : amountVes * aliquot / 100;
+  const expensesVes = period.expenses.reduce((sum, expense) => {
+    const amount = Number(expense.amount);
+    return sum + (expense.currency === 'USD' ? amount * rate : expense.currency === 'VES' ? amount : 0);
+  }, 0);
+  const componentsVes = components.reduce((sum, component) => sum + Number(component.amountVes), 0);
+  const expenseRows = period.expenses.map((expense) => {
+    const amount = Number(expense.amount);
+    const amountVes = expense.currency === 'USD' ? amount * rate : expense.currency === 'VES' ? amount : 0;
+    const propertyVes = isProperty ? toShareVes(amountVes, expense.allocationMethod) : amountVes;
+    return {
+      id: expense.id,
+      description: expense.description,
+      amount,
+      currency: expense.currency,
+      propertyAmountVes: propertyVes,
+      propertyAmountUsd: propertyVes / rate,
+      allocationMethod: expense.allocationMethod,
+      concept: {
+        id: expense.concept.id,
+        name: expense.concept.name,
+        category: { id: expense.concept.category.id, name: expense.concept.category.name },
+      },
+    };
+  });
+  const componentRows = components.map((component) => {
+    const amountVes = Number(component.amountVes);
+    const propertyVes = isProperty ? toShareVes(amountVes, component.allocationMethod) : amountVes;
+    return {
+      id: component.id,
+      label: component.label,
+      type: component.type,
+      amountVes,
+      propertyAmountVes: propertyVes,
+      propertyAmountUsd: propertyVes / rate,
+      allocationMethod: component.allocationMethod,
+    };
+  });
+  const savedAllocation = isProperty
+    ? savedNotice?.allocations.find((item) => item.property.id === propertyId)
+    : undefined;
+  const propertyExpensesVes = expenseRows.reduce((sum, row) => sum + row.propertyAmountVes, 0);
+  const propertyComponentsVes = componentRows.reduce((sum, row) => sum + row.propertyAmountVes, 0);
+  const totalVes = isProperty
+    ? savedAllocation ? Number(savedAllocation.totalVes) : propertyExpensesVes + propertyComponentsVes
+    : Number(savedNotice?.totalCommunityVes ?? expensesVes + componentsVes);
+  const totalUsd = isProperty
+    ? savedAllocation ? Number(savedAllocation.totalUsd) : totalVes / rate
+    : Number(savedNotice?.totalCommunityUsd ?? totalVes / rate);
+  const accounts = treasury?.id === core.id
+    ? treasury.bankAccounts.filter((account) => account.status === 'ACTIVE')
+    : [];
+  const allocation = isProperty
+    ? {
+        id: savedAllocation?.id ?? `preview-${property?.id ?? 'property'}`,
+        aliquotSnapshot: Number(savedAllocation?.aliquotSnapshot ?? aliquot),
+        expenseShareVes: Number(savedAllocation?.expenseShareVes ?? propertyExpensesVes),
+        componentShareVes: Number(savedAllocation?.componentShareVes ?? propertyComponentsVes),
+        totalVes,
+        totalUsd,
+      }
+    : {
+        id: `preview-${period.id}-community`,
+        aliquotSnapshot: 100,
+        expenseShareVes: Number(savedNotice?.totalExpensesVes ?? expensesVes),
+        componentShareVes: Number(savedNotice?.totalComponentsVes ?? componentsVes),
+        totalVes,
+        totalUsd,
+      };
+  const bankAccounts = accounts.map((account) => ({
+    id: account.id,
+    bankName: account.bankName,
+    holder: account.holder,
+    holderRif: account.holderRif ?? core.rif,
+    accountNumber: account.accountNumber,
+    accountType: account.accountType,
+    currency: account.currency,
+  }));
+  const paymentMethods = treasury?.id === core.id
+    ? treasury.paymentMethods.filter((method) => method.status === 'ACTIVE').map((method) => ({
+        id: method.id,
+        type: method.type,
+        label: method.label,
+        currency: method.currency,
+        mobilePhone: method.mobilePhone,
+        mobileDocument: method.mobileDocument,
+        instructions: method.instructions,
+      }))
+    : [];
+  return {
+    notice: {
+      id: savedNotice?.id ?? `PREVIEW-${period.periodKey}${isProperty ? `-${property?.code ?? ''}` : '-COMUNIDAD'}`,
+      billingPeriod: period.label,
+      issuedAt: '',
+      bcvRate: rate,
+      totalExpensesVes: Number(savedNotice?.totalExpensesVes ?? expensesVes),
+      totalComponentsVes: Number(savedNotice?.totalComponentsVes ?? componentsVes),
+      totalCommunityVes: Number(savedNotice?.totalCommunityVes ?? expensesVes + componentsVes),
+      totalCommunityUsd: Number(savedNotice?.totalCommunityUsd ?? (expensesVes + componentsVes) / rate),
+      components: componentRows,
+      expenses: expenseRows,
+      allocation,
+    },
+    community: { id: core.id, name: core.name, rif: core.rif, bankAccounts, paymentMethods },
+    ownerName: isProperty ? 'Obligación asociada al inmueble' : 'Resumen comunitario',
+    propertyCode: isProperty ? property?.code : 'Todos los inmuebles',
+    towerName: isProperty ? property?.location?.name ?? '' : '',
+    communityRif: core.rif,
+    communityName: core.name,
+    scope: isProperty ? 'PROPERTY' : 'COMMUNITY',
+  };
+}
+
 function ExpensesView({
   period,
   usdEquivalent,
@@ -1013,6 +1247,35 @@ function ExpensesView({
   period: BillingSnapshot['billingPeriods'][number];
   usdEquivalent: number;
 }) {
+  const [expenseSearch, setExpenseSearch] = useState('');
+  const [showAllExpenses, setShowAllExpenses] = useState(false);
+  const normalizedSearch = expenseSearch.trim().toLocaleLowerCase('es-VE');
+  const filteredExpenses = useMemo(() => {
+    if (!normalizedSearch) return period.expenses;
+    return period.expenses.filter((expense) => {
+      const searchable = [
+        expense.concept.category.code,
+        expense.concept.category.name,
+        expense.concept.code,
+        expense.concept.name,
+        expense.description,
+        expense.beneficiaryName,
+        expense.beneficiaryDocument,
+        expense.invoiceNumber,
+        expense.paymentReference,
+        expense.paymentSource,
+        expense.bankAccount?.bankName,
+        expense.currency,
+        String(expense.amount),
+        money(Number(expense.amount)),
+      ].filter(Boolean).join(' ').toLocaleLowerCase('es-VE');
+      return searchable.includes(normalizedSearch);
+    });
+  }, [normalizedSearch, period.expenses]);
+  const visibleExpenses = showAllExpenses
+    ? filteredExpenses
+    : filteredExpenses.slice(0, 5);
+
   return (
     <>
       <div className="grid gap-4 sm:grid-cols-3">
@@ -1037,6 +1300,30 @@ function ExpensesView({
           title="Egresos del período"
           subtitle="Beneficiario, medio de pago y asiento contable en un único registro."
         />
+        <div className="flex flex-col gap-3 border-b border-[#071a33]/8 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full sm:max-w-md">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={expenseSearch}
+              onChange={(event) => {
+                setExpenseSearch(event.target.value);
+                setShowAllExpenses(false);
+              }}
+              placeholder="Buscar categoría, concepto, pago o monto"
+              aria-label="Buscar egresos por categoría, concepto, pago o monto"
+              className={`${inputClass} pl-9`}
+            />
+          </div>
+          {filteredExpenses.length > 5 && (
+            <button
+              type="button"
+              onClick={() => setShowAllExpenses((current) => !current)}
+              className="shrink-0 rounded-xl border border-[#071a33]/12 px-4 py-2.5 text-sm font-bold text-[#071a33] transition hover:border-[#b08a3c]"
+            >
+              {showAllExpenses ? 'Ver menos' : `Ver más (${filteredExpenses.length - 5})`}
+            </button>
+          )}
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[920px] text-left text-sm">
             <thead className="bg-[#f7f4ed] text-xs uppercase tracking-wide text-slate-400">
@@ -1049,7 +1336,7 @@ function ExpensesView({
               </tr>
             </thead>
             <tbody className="divide-y divide-[#071a33]/6">
-              {period.expenses.map((expense) => (
+              {visibleExpenses.map((expense) => (
                 <tr key={expense.id}>
                   <td className="px-5 py-4">
                     <b>{expense.concept.category.code}</b>
@@ -1090,13 +1377,15 @@ function ExpensesView({
                   </td>
                 </tr>
               ))}
-              {!period.expenses.length && (
+              {!filteredExpenses.length && (
                 <tr>
                   <td
                     colSpan={5}
                     className="px-5 py-10 text-center text-slate-500"
                   >
-                    Todavía no hay egresos en este período.
+                    {period.expenses.length
+                      ? 'No hay egresos que coincidan con la búsqueda.'
+                      : 'Todavía no hay egresos en este período.'}
                   </td>
                 </tr>
               )}
@@ -1216,10 +1505,11 @@ function PaymentsView({
                     )}
                   </td>
                   <td className="px-5 py-4">
-                    <JournalBadge number={payment.journalEntry.entryNumber} />
+                    <JournalBadge number={payment.journalEntry?.entryNumber} />
                   </td>
                   <td className="px-5 py-4 text-right font-bold">
-                    {payment.currency} {money(Number(payment.amount))}
+                    {payment.originalCurrency ?? payment.currency ?? '—'}{' '}
+                    {money(Number(payment.originalAmount ?? payment.amount ?? 0))}
                   </td>
                 </tr>
               ))}
@@ -1289,6 +1579,7 @@ function NoticesView({
     );
   }
   const chargeNotice = period.chargeNotice;
+  const bcvRate = Number(period.bcvRate) || 1;
   return (
     <section className="rounded-[1.5rem] border border-[#b08a3c]/25 bg-[#fffdf8] p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1297,10 +1588,10 @@ function NoticesView({
             Aviso de cobro · {statusLabel(chargeNotice.status)}
           </p>
           <h3 className="mt-2 text-2xl font-bold">
-            Bs {money(Number(chargeNotice.totalCommunityVes))}
+            USD {money(Number(chargeNotice.totalCommunityUsd))}
           </h3>
           <p className="mt-1 text-sm text-slate-500">
-            Total comunidad · USD {money(Number(chargeNotice.totalCommunityUsd))}
+            Total comunidad (USD)
           </p>
         </div>
         {canWrite && chargeNotice.status === 'PREPARED' && (
@@ -1315,11 +1606,13 @@ function NoticesView({
       <div className="mt-5 grid gap-3 sm:grid-cols-3">
         <SummaryAmount
           label="Egresos"
-          value={Number(chargeNotice.totalExpensesVes)}
+          value={Number(chargeNotice.totalExpensesVes) / bcvRate}
+          currency="USD"
         />
         <SummaryAmount
           label="Fondos y cuotas"
-          value={Number(chargeNotice.totalComponentsVes)}
+          value={Number(chargeNotice.totalComponentsVes) / bcvRate}
+          currency="USD"
         />
         <SummaryAmount
           label="Inmuebles"
@@ -1350,8 +1643,8 @@ function NoticesView({
               key={component.id}
               className="rounded-full border border-[#b08a3c]/20 bg-white px-3 py-1.5 text-xs font-bold"
             >
-              {component.label}: {component.currency}{' '}
-              {money(Number(component.amount))}
+              {component.label}: USD{' '}
+              {money(Number(component.amountVes) / bcvRate)}
             </span>
           ))}
         </div>
@@ -1377,16 +1670,13 @@ function NoticesView({
                   {money(Number(allocation.aliquotSnapshot), 6)}%
                 </td>
                 <td className="px-4 py-3 text-right">
-                  Bs {money(Number(allocation.expenseShareVes))}
+                  USD {money(Number(allocation.expenseShareVes) / bcvRate)}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  Bs {money(Number(allocation.componentShareVes))}
+                  USD {money(Number(allocation.componentShareVes) / bcvRate)}
                 </td>
                 <td className="px-4 py-3 text-right font-bold">
-                  Bs {money(Number(allocation.totalVes))}
-                  <span className="block text-xs font-normal text-slate-500">
-                    USD {money(Number(allocation.totalUsd))}
-                  </span>
+                  USD {money(Number(allocation.totalUsd))}
                 </td>
               </tr>
             ))}
@@ -1554,6 +1844,8 @@ function ExpenseForm({
   onSubmit,
 }: ExpenseFormProps) {
   const [conceptSearch, setConceptSearch] = useState('');
+  const [selectedConceptId, setSelectedConceptId] = useState('');
+  const [selectedExpenseAccountId, setSelectedExpenseAccountId] = useState('');
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState<'VES' | 'USD'>('USD');
   const [paymentAccountId, setPaymentAccountId] = useState(bankLedgerId);
@@ -1602,7 +1894,12 @@ function ExpenseForm({
               disabled={!categoryId}
               placeholder="Buscar código o nombre dentro de esta categoría"
             />
-            <select name="conceptId" className={inputClass} required disabled={!categoryId || conceptsLoading}>
+            <select name="conceptId" value={selectedConceptId} onChange={(event) => {
+              const id = event.target.value;
+              setSelectedConceptId(id);
+              const concept = concepts.find((item) => item.id === id);
+              setSelectedExpenseAccountId(concept?.defaultExpenseAccountId ?? '');
+            }} className={inputClass} required disabled={!categoryId || conceptsLoading}>
               <option value="">{conceptsLoading ? 'Buscando conceptos…' : 'Seleccionar concepto'}</option>
               {concepts.map((item) => (
                 <option key={item.id} value={item.id}>{item.category.name} → {item.code} · {item.name}</option>
@@ -1614,7 +1911,13 @@ function ExpenseForm({
           name="expenseAccountId"
           label="Cuenta contable del gasto"
           accounts={expenseAccounts}
+          value={selectedExpenseAccountId}
+          onChange={setSelectedExpenseAccountId}
+          optional={Boolean(concepts.find((item) => item.id === selectedConceptId)?.defaultExpenseAccountId)}
         />
+        {concepts.find((item) => item.id === selectedConceptId)?.defaultExpenseAccountId && (
+          <p className="-mt-3 text-xs text-slate-500 md:col-span-2">Cuenta sugerida por el concepto; puedes cambiarla antes de guardar.</p>
+        )}
         <div className="md:col-span-2">
           <Field label="Detalle particular del gasto">
             <input name="description" className={inputClass} required />
@@ -1955,27 +2258,106 @@ function NoticeForm({
   saving: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  const [reservePercentage, setReservePercentage] = useState('');
+  const [reserveAmount, setReserveAmount] = useState('');
+  const rate = Number(period.bcvRate) || 1;
+  const baseExpensesUsd = period.expenses.reduce((total, expense) => {
+    const amount = Number(expense.amount) || 0;
+    return total + (expense.currency === 'VES' ? amount / rate : amount);
+  }, 0);
+  const reserveUsd = Number(reserveAmount) || 0;
+  const totalNoticeUsd = baseExpensesUsd + reserveUsd;
+
+  const updateReservePercentage = (value: string) => {
+    setReservePercentage(value);
+    const percentage = Number(value);
+    setReserveAmount(
+      Number.isFinite(percentage) && percentage >= 0
+        ? ((baseExpensesUsd * percentage) / 100).toFixed(2)
+        : '',
+    );
+  };
+
   return (
     <form onSubmit={onSubmit}>
       <div className="rounded-xl border border-[#071a33]/8 bg-white p-4 text-sm leading-6">
-        <b>{period.expenses.length} egreso(s)</b> serán incluidos
-        automáticamente. Los conceptos adicionales sin monto no aparecerán.
+        <p className="font-bold">¿Qué debes hacer aquí?</p>
+        <p className="mt-1 text-slate-600">
+          CASA ya incluirá automáticamente los {period.expenses.length} egreso(s)
+          contabilizados. Solo revisa las cuentas sugeridas y agrega un fondo o
+          cuota adicional si la comunidad lo aprobó. Si no aplica, deja esos
+          campos vacíos.
+        </p>
       </div>
       <div className="mt-4 grid gap-4 rounded-xl border border-[#b08a3c]/20 bg-[#fffdf8] p-4 md:grid-cols-2">
         <AccountSelect
           name="receivableAccountId"
           label="Cuenta por cobrar a propietarios"
           accounts={assetAccounts}
+          defaultValue={assetAccounts.find((account) => account.code === '1.1.03')?.id}
         />
         <AccountSelect
           name="billingIncomeAccountId"
           label="Cuenta de ingreso por cuotas"
           accounts={incomeAccounts}
+          defaultValue={incomeAccounts.find((account) => account.code === '4.1.01')?.id}
         />
         <p className="md:col-span-2 text-xs leading-5 text-slate-500">
-          Al emitir: CASA debitará cuentas por cobrar y acreditará ingresos por
-          el total de la comunidad.
+          No necesitas crear un asiento manual. Al emitir, CASA registra
+          automáticamente el total a cobrar: aumenta la cuenta por cobrar y
+          reconoce el ingreso por cuotas.
         </p>
+      </div>
+      <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-sm font-bold text-emerald-950">Calculadora de fondo de reserva</p>
+            <p className="mt-1 text-xs leading-5 text-emerald-900/75">
+              Escribe el porcentaje aprobado por la comunidad. CASA lo calcula
+              sobre los egresos del período y lo suma al aviso.
+            </p>
+          </div>
+          <div className="mt-2 text-left sm:mt-0 sm:text-right">
+            <p className="text-xs font-semibold text-emerald-900/70">Total base del aviso</p>
+            <p className="text-xl font-bold text-emerald-950">USD {money(baseExpensesUsd)}</p>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <Field label="Porcentaje de reserva">
+            <div className="relative">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={reservePercentage}
+                onChange={(event) => updateReservePercentage(event.target.value)}
+                className={`${inputClass} pr-9`}
+                placeholder="Ej. 10"
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">%</span>
+            </div>
+          </Field>
+          <Field label="Fondo calculado (USD)">
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={reserveAmount}
+              onChange={(event) => setReserveAmount(event.target.value)}
+              className={inputClass}
+              placeholder="Se calcula automáticamente"
+            />
+          </Field>
+          <div className="rounded-xl border border-emerald-200 bg-white px-3.5 py-3">
+            <p className="text-xs font-semibold text-slate-500">Total estimado (gastos + reserva)</p>
+            <p className="mt-1 text-lg font-bold text-[#071a33]">USD {money(totalNoticeUsd)}</p>
+          </div>
+        </div>
+      </div>
+      <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
+        <b>Fondos y cuotas adicionales son opcionales.</b> Úsalos solo si este
+        mes existe un cobro aprobado aparte del gasto común, como fondo de
+        reserva, provisión, cuota extraordinaria o emergencia.
       </div>
       {(
         [
@@ -1989,7 +2371,7 @@ function NoticeForm({
           key={key}
           className="mt-4 grid gap-3 rounded-xl border border-[#071a33]/8 bg-white p-4 sm:grid-cols-[1.4fr_1fr_100px_1fr]"
         >
-          <Field label={label}>
+          <Field label={`${label} (opcional)`}>
             <input
               name={`${key}Label`}
               className={inputClass}
@@ -2003,6 +2385,9 @@ function NoticeForm({
               min="0"
               step="0.01"
               className={inputClass}
+              value={key === 'reserve' ? reserveAmount : undefined}
+              onChange={key === 'reserve' ? (event) => setReserveAmount(event.target.value) : undefined}
+              readOnly={key === 'reserve'}
             />
           </Field>
           <Field label="Moneda">
@@ -2085,10 +2470,12 @@ function CategoryForm({
 
 function ConceptForm({
   categories,
+  expenseAccounts,
   saving,
   onSubmit,
 }: {
   categories: BillingSnapshot['expenseCategories'];
+  expenseAccounts: AccountingSnapshot['ledgerAccounts'];
   saving: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
@@ -2129,6 +2516,13 @@ function ConceptForm({
       </Field>
       <Field label="Descripción">
         <textarea name="description" className={inputClass} rows={3} />
+      </Field>
+      <Field label="Cuenta de gasto predeterminada (opcional)">
+        <select name="defaultExpenseAccountId" className={inputClass} defaultValue="">
+          <option value="">Elegir automáticamente al registrar el gasto</option>
+          {expenseAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} · {account.name}</option>)}
+        </select>
+        <span className="mt-1 block text-xs text-slate-500">Se sugerirá en cada gasto y podrá cambiarse antes de contabilizarlo.</span>
       </Field>
       <Submit saving={saving} label="Crear concepto" />
     </form>
@@ -2205,15 +2599,21 @@ function AccountSelect({
   label,
   accounts,
   optional = false,
+  value,
+  onChange,
+  defaultValue,
 }: {
   name: string;
   label: string;
   accounts: AccountingSnapshot['ledgerAccounts'];
   optional?: boolean;
+  value?: string;
+  onChange?: (value: string) => void;
+  defaultValue?: string;
 }) {
   return (
     <Field label={label}>
-      <select name={name} className={inputClass} required={!optional}>
+      <select name={name} value={value} defaultValue={value === undefined ? defaultValue : undefined} onChange={onChange ? (event) => onChange(event.target.value) : undefined} className={inputClass} required={!optional}>
         <option value="">
           {optional ? 'No aplica' : 'Seleccionar cuenta contable'}
         </option>
@@ -2276,6 +2676,7 @@ const dialogTitle = {
   account: 'Crear cuenta contable de gasto',
   payment: 'Registrar pago del propietario',
   notice: 'Preparar aviso de cobro',
+  print: 'Imprimir aviso de cobro',
 };
 
 function statusLabel(status: string) {
@@ -2404,18 +2805,21 @@ function SummaryAmount({
   label,
   value,
   currency = true,
+  symbol = 'Bs',
 }: {
   label: string;
   value: number;
-  currency?: boolean;
+  currency?: boolean | string;
+  symbol?: string;
 }) {
+  const displaySymbol = typeof currency === 'string' ? currency : symbol;
   return (
     <div className="rounded-xl border border-[#071a33]/8 bg-white p-4">
       <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
         {label}
       </p>
       <p className="mt-2 font-bold">
-        {currency ? `Bs ${money(value)}` : value.toLocaleString('es-VE')}
+        {currency ? `${displaySymbol} ${money(value)}` : value.toLocaleString('es-VE')}
       </p>
     </div>
   );

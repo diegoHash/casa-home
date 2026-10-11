@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { usePeerConference } from '../hooks/usePeerConference';
+import { safeRandomUUID } from '../utils/uuid';
 import {
   ArrowLeft,
   Camera,
@@ -108,7 +109,7 @@ function ConferenceLanding() {
   const [joining, setJoining] = useState(false);
 
   const createRoom = () => {
-    navigate(`/conferencias/${crypto.randomUUID()}`);
+    navigate(`/conferencias/${safeRandomUUID()}`);
   };
 
   const joinRoom = async () => {

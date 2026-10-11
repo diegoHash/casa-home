@@ -9,13 +9,16 @@ import { PersonSelectCombobox } from './PersonSelectCombobox';
 
 export type AdministrationDialogMode =
   | 'person'
+  | 'edit-person'
   | 'location'
   | 'property'
   | 'ownership'
   | 'employment'
   | 'board'
   | 'bank'
-  | 'payment-method';
+  | 'payment-method'
+  | 'edit-bank'
+  | 'edit-payment-method';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -49,6 +52,12 @@ const dialogCopy: Record<
     description:
       'Crea la identidad una sola vez. Después podrás vincularla como propietaria, integrante de junta o trabajadora.',
     submit: 'Registrar persona',
+  },
+  'edit-person': {
+    eyebrow: 'Directorio único',
+    title: 'Editar persona',
+    description: 'Actualiza los datos de contacto de esta persona dentro de la comunidad.',
+    submit: 'Guardar cambios',
   },
   location: {
     eyebrow: 'Estructura física',
@@ -99,18 +108,36 @@ const dialogCopy: Record<
       'Habilita transferencia, pago móvil o efectivo como canal aceptado por la comunidad.',
     submit: 'Agregar método',
   },
+  'edit-bank': {
+    eyebrow: 'Tesorería',
+    title: 'Editar cuenta bancaria',
+    description: 'Actualiza los datos de la cuenta oficial de la comunidad.',
+    submit: 'Guardar cambios',
+  },
+  'edit-payment-method': {
+    eyebrow: 'Tesorería',
+    title: 'Editar método de pago',
+    description: 'Actualiza la configuración visible del canal de recepción.',
+    submit: 'Guardar cambios',
+  },
 };
 
 export function AdministrationCoreDialog({
   mode,
   core,
   treasury,
+  person,
+  bankAccount,
+  paymentMethod,
   onClose,
   onSaved,
 }: {
   mode: AdministrationDialogMode;
   core: CoreSnapshot | null;
   treasury: TreasurySnapshot | null;
+  person?: CoreSnapshot['people'][number]['person'] | null;
+  bankAccount?: TreasurySnapshot['bankAccounts'][number] | null;
+  paymentMethod?: TreasurySnapshot['paymentMethods'][number] | null;
   onClose: () => void;
   onSaved: (message: string) => Promise<void> | void;
 }) {
@@ -118,7 +145,13 @@ export function AdministrationCoreDialog({
   const [error, setError] = useState('');
   const [paymentType, setPaymentType] = useState<
     'BANK_TRANSFER' | 'MOBILE_PAYMENT' | 'CASH'
-  >('BANK_TRANSFER');
+  >(
+    paymentMethod?.type === 'MOBILE_PAYMENT'
+      ? 'MOBILE_PAYMENT'
+      : paymentMethod?.type === 'CASH'
+        ? 'CASH'
+        : 'BANK_TRANSFER',
+  );
   const copy = dialogCopy[mode];
 
   const ownershipCapacity = useMemo(() => {
@@ -179,6 +212,15 @@ export function AdministrationCoreDialog({
             email: optional(data, 'email')?.toLowerCase(),
           });
           break;
+        case 'edit-person':
+          if (!person) throw new Error('No se encontró la persona seleccionada.');
+          await CommunityWorkspaceService.updatePerson(person.id, {
+            firstName: text(data, 'firstName').toLocaleUpperCase('es-VE'),
+            lastName: text(data, 'lastName').toLocaleUpperCase('es-VE'),
+            phone: optional(data, 'phone'),
+            email: optional(data, 'email')?.toLowerCase(),
+          });
+          break;
         case 'location':
           await CommunityWorkspaceService.createPropertyLocation({
             kind: text(data, 'kind') as 'BUILDING' | 'SHOPPING_CENTER',
@@ -201,6 +243,8 @@ export function AdministrationCoreDialog({
               : undefined,
             maximumOccupancy: number(data, 'maximumOccupancy'),
             braceletQuota: number(data, 'braceletQuota'),
+            parkingSpace: optional(data, 'parkingSpace'),
+            parkingCapacity: number(data, 'parkingCapacity'),
           });
           break;
         }
@@ -281,6 +325,17 @@ export function AdministrationCoreDialog({
             currency: text(data, 'currency') as 'VES' | 'USD' | 'EUR',
           });
           break;
+        case 'edit-bank':
+          if (!bankAccount) throw new Error('No se encontró la cuenta bancaria seleccionada.');
+          await CommunityWorkspaceService.updateBankAccount(bankAccount.id, {
+            bankName: text(data, 'bankName'),
+            holder: text(data, 'holder'),
+            holderRif: text(data, 'holderRif'),
+            accountNumber: text(data, 'accountNumber'),
+            accountType: text(data, 'accountType'),
+            currency: text(data, 'currency') as 'VES' | 'USD' | 'EUR',
+          });
+          break;
         case 'payment-method':
           await CommunityWorkspaceService.createPaymentMethod({
             type: paymentType,
@@ -298,6 +353,25 @@ export function AdministrationCoreDialog({
               paymentType === 'MOBILE_PAYMENT'
                 ? text(data, 'mobileDocument')
                 : undefined,
+            instructions: optional(data, 'instructions'),
+          });
+          break;
+        case 'edit-payment-method':
+          if (!paymentMethod) throw new Error('No se encontró el método de pago seleccionado.');
+          await CommunityWorkspaceService.updatePaymentMethod(paymentMethod.id, {
+            type: paymentType,
+            label: text(data, 'label'),
+            currency: text(data, 'currency') as 'VES' | 'USD' | 'EUR',
+            bankAccountId:
+              paymentType === 'BANK_TRANSFER' ? text(data, 'bankAccountId') : '',
+            mobilePhone:
+              paymentType === 'MOBILE_PAYMENT'
+                ? text(data, 'mobilePhone')
+                : '',
+            mobileDocument:
+              paymentType === 'MOBILE_PAYMENT'
+                ? text(data, 'mobileDocument')
+                : '',
             instructions: optional(data, 'instructions'),
           });
           break;
@@ -354,6 +428,7 @@ export function AdministrationCoreDialog({
 
         <form onSubmit={submit} className="space-y-5 px-6 py-6 sm:px-8">
           {mode === 'person' && <PersonFields />}
+          {mode === 'edit-person' && <EditPersonFields person={person} />}
           {mode === 'location' && <LocationFields />}
           {mode === 'property' && (
             <PropertyFields locations={core?.locations ?? []} />
@@ -384,11 +459,20 @@ export function AdministrationCoreDialog({
             />
           )}
           {mode === 'bank' && <BankFields core={core} />}
+          {mode === 'edit-bank' && <BankFields core={core} bankAccount={bankAccount} />}
           {mode === 'payment-method' && (
             <PaymentMethodFields
               treasury={treasury}
               type={paymentType}
               setType={setPaymentType}
+            />
+          )}
+          {mode === 'edit-payment-method' && (
+            <PaymentMethodFields
+              treasury={treasury}
+              type={paymentType}
+              setType={setPaymentType}
+              initialMethod={paymentMethod}
             />
           )}
 
@@ -435,6 +519,7 @@ function Field({
   min,
   max,
   step,
+  disabled,
   className,
 }: {
   label: string;
@@ -446,6 +531,7 @@ function Field({
   min?: string | number;
   max?: string | number;
   step?: string | number;
+  disabled?: boolean;
   className?: string;
 }) {
   return (
@@ -461,6 +547,7 @@ function Field({
         min={min}
         max={max}
         step={step}
+        disabled={disabled}
       />
     </label>
   );
@@ -524,6 +611,19 @@ function PersonFields() {
       />
       <Field label="Teléfono (opcional)" name="phone" placeholder="0414-0000000" />
       <EmailInput label="Correo electrónico (opcional)" name="email" />
+    </div>
+  );
+}
+
+function EditPersonFields({ person }: { person?: CoreSnapshot['people'][number]['person'] | null }) {
+  return (
+    <div className="grid gap-5 sm:grid-cols-2">
+      <Field label="Nombres" name="firstName" required defaultValue={person?.firstName} />
+      <Field label="Apellidos" name="lastName" required defaultValue={person?.lastName} />
+      <Field label="Tipo de documento" name="documentType" defaultValue={person?.documentType} />
+      <Field label="Número de documento" name="documentNumber" defaultValue={person?.documentNumber} disabled />
+      <Field label="Teléfono (opcional)" name="phone" defaultValue={person?.phone ?? ''} />
+      <Field label="Correo electrónico (opcional)" name="email" type="email" defaultValue={person?.email ?? ''} />
     </div>
   );
 }
@@ -755,6 +855,19 @@ function PropertyFields({
         max={10000}
         defaultValue={0}
       />
+      <Field
+        label="Espacio(s) de estacionamiento (opcional)"
+        name="parkingSpace"
+        placeholder="Ej. P-114 / P-115"
+      />
+      <Field
+        label="Capacidad de estacionamiento"
+        name="parkingCapacity"
+        type="number"
+        min={1}
+        max={100}
+        placeholder="Cantidad de vehículos"
+      />
     </div>
   );
 }
@@ -935,34 +1048,45 @@ function BoardFields({
   );
 }
 
-function BankFields({ core }: { core: CoreSnapshot | null }) {
+function BankFields({
+  core,
+  bankAccount,
+}: {
+  core: CoreSnapshot | null;
+  bankAccount?: TreasurySnapshot['bankAccounts'][number] | null;
+}) {
   return (
     <div className="grid gap-5 sm:grid-cols-2">
-      <Field label="Banco" name="bankName" required />
+      <Field label="Banco" name="bankName" required defaultValue={bankAccount?.bankName} />
       <Field
         label="Titular"
         name="holder"
         required
-        defaultValue={core?.legalName}
+        defaultValue={bankAccount?.holder ?? core?.legalName}
       />
       <Field
         label="RIF o identificación del titular"
         name="holderRif"
         required
-        defaultValue={core?.rif}
+        defaultValue={bankAccount?.holderRif ?? core?.rif}
       />
-      <Field label="Número de cuenta" name="accountNumber" required />
+      <Field
+        label="Número de cuenta"
+        name="accountNumber"
+        required
+        defaultValue={bankAccount?.accountNumber}
+      />
       <Select
         label="Tipo de cuenta"
         name="accountType"
-        defaultValue="CORRIENTE"
+        defaultValue={bankAccount?.accountType ?? 'CORRIENTE'}
       >
         <option value="CORRIENTE">Corriente</option>
         <option value="AHORRO">Ahorro</option>
         <option value="CUSTODIA">Custodia / moneda extranjera</option>
         <option value="OTRA">Otra</option>
       </Select>
-      <Select label="Moneda" name="currency" defaultValue="VES">
+      <Select label="Moneda" name="currency" defaultValue={bankAccount?.currency ?? 'VES'}>
         <option value="VES">Bolívares (VES)</option>
         <option value="USD">Dólares (USD)</option>
         <option value="EUR">Euros (EUR)</option>
@@ -975,10 +1099,12 @@ function PaymentMethodFields({
   treasury,
   type,
   setType,
+  initialMethod,
 }: {
   treasury: TreasurySnapshot | null;
   type: 'BANK_TRANSFER' | 'MOBILE_PAYMENT' | 'CASH';
   setType: (value: 'BANK_TRANSFER' | 'MOBILE_PAYMENT' | 'CASH') => void;
+  initialMethod?: TreasurySnapshot['paymentMethods'][number] | null;
 }) {
   return (
     <div className="grid gap-5 sm:grid-cols-2">
@@ -1005,6 +1131,7 @@ function PaymentMethodFields({
         label="Nombre visible"
         name="label"
         required
+        defaultValue={initialMethod?.label}
         placeholder={
           type === 'BANK_TRANSFER'
             ? 'Transferencia Banesco'
@@ -1013,7 +1140,11 @@ function PaymentMethodFields({
               : 'Efectivo en caja'
         }
       />
-      <Select label="Moneda" name="currency" defaultValue="VES">
+      <Select
+        label="Moneda"
+        name="currency"
+        defaultValue={initialMethod?.currency ?? 'VES'}
+      >
         <option value="VES">Bolívares (VES)</option>
         <option value="USD">Dólares (USD)</option>
         <option value="EUR">Euros (EUR)</option>
@@ -1023,7 +1154,7 @@ function PaymentMethodFields({
           label="Cuenta bancaria"
           name="bankAccountId"
           required
-          defaultValue=""
+          defaultValue={initialMethod?.bankAccountId ?? ''}
         >
           <option value="" disabled>
             Selecciona una cuenta
@@ -1040,11 +1171,17 @@ function PaymentMethodFields({
       )}
       {type === 'MOBILE_PAYMENT' && (
         <>
-          <Field label="Teléfono afiliado" name="mobilePhone" required />
+          <Field
+            label="Teléfono afiliado"
+            name="mobilePhone"
+            required
+            defaultValue={initialMethod?.mobilePhone}
+          />
           <Field
             label="RIF o cédula afiliada"
             name="mobileDocument"
             required
+            defaultValue={initialMethod?.mobileDocument}
           />
         </>
       )}
@@ -1053,6 +1190,7 @@ function PaymentMethodFields({
         <textarea
           className={`${fieldClass} min-h-28 resize-y`}
           name="instructions"
+          defaultValue={initialMethod?.instructions}
           placeholder="Indicaciones que verá el propietario al momento de pagar."
         />
       </label>

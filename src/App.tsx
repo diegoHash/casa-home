@@ -14,11 +14,14 @@ import OwnerPortal from './pages/OwnerPortal';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import PasswordReset from './pages/PasswordReset';
 import SuperAdmin from './pages/SuperAdmin';
+import SuperAdminClientPage from './pages/SuperAdminClientPage';
 import TermsOfService from './pages/TermsOfService';
 import { RootSession } from './services/RootSession';
 import { StaffSession } from './services/StaffSession';
 import { CasaAuthService } from './services/CasaAuthService';
 import { SessionTimeoutGuard } from './components/auth/SessionTimeoutGuard';
+import WorkspaceSwitcher from './components/workspace/WorkspaceSwitcher';
+import { workspaceIsEnabled } from './config/workspaceCatalog';
 
 function PublicDocumentLayout({ children }: { children: React.ReactNode }) {
   return <div className="min-h-screen bg-[#0a0a0a]">
@@ -204,6 +207,7 @@ function StaffOnlyRoute({
           const grantedWorkspaces = localContext.workspaces ?? [];
           if (
             !selectedWorkspace ||
+            !workspaceIsEnabled(selectedWorkspace) ||
             (!grantedWorkspaces.includes('*') &&
               !grantedWorkspaces.includes(selectedWorkspace))
           ) {
@@ -290,9 +294,14 @@ export default function App() {
           path="/workspace"
           element={<StaffOnlyRoute requireWorkspace><CommunityWorkspace /></StaffOnlyRoute>}
         />
+        <Route
+          path="/workspace/inmuebles/:propertyId/editar"
+          element={<StaffOnlyRoute requireWorkspace><CommunityWorkspace /></StaffOnlyRoute>}
+        />
         <Route path="/control-login" element={<Navigate to="/" replace />} />
         <Route path="/restablecer-clave" element={<PasswordReset />} />
         <Route path="/dashboard" element={<RootOnlyRoute><SuperAdmin /></RootOnlyRoute>} />
+        <Route path="/dashboard/clientes/:clientId" element={<RootOnlyRoute><SuperAdminClientPage /></RootOnlyRoute>} />
         <Route path="/settings" element={<RootOnlyRoute><SuperAdmin /></RootOnlyRoute>} />
         <Route path="/privacy" element={<PublicDocumentLayout><PrivacyPolicy /></PublicDocumentLayout>} />
         <Route path="/terms" element={<PublicDocumentLayout><TermsOfService /></PublicDocumentLayout>} />
@@ -300,6 +309,7 @@ export default function App() {
         <Route path="/conferencias/:roomId" element={<Conferences />} />
         <Route path="/solicitar-demo" element={<DemoRequest />} />
       </Routes>
+      <WorkspaceSwitcher />
     </SessionTimeoutGuard>
   );
 }
