@@ -14,7 +14,7 @@ import axios from 'axios';
  */
 const CASA_API_URL =
   import.meta.env.VITE_CASA_API_URL ||
-  '/v1';
+  (import.meta.env.PROD ? 'https://api.somoscasa.site/v1' : '/v1');
 
 export const casaApi = axios.create({
   baseURL: CASA_API_URL,
