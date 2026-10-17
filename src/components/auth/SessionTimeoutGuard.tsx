@@ -80,6 +80,19 @@ export function SessionTimeoutGuard({ children }: { children?: React.ReactNode }
   }, [handleLogout]);
 
   useEffect(() => {
+    const onSessionExpired = (event: Event) => {
+      const type = (event as CustomEvent<SessionType>).detail;
+      if (type !== 'root' && type !== 'staff') return;
+      navigate(type === 'root' ? '/' : '/staff-login', {
+        replace: true,
+        state: { reason: 'session-expired' },
+      });
+    };
+    window.addEventListener('casa:session-expired', onSessionExpired);
+    return () => window.removeEventListener('casa:session-expired', onSessionExpired);
+  }, [navigate]);
+
+  useEffect(() => {
     const update = () => {
       const type = activeSession();
       const remaining = remainingSeconds(type);

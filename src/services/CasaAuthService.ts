@@ -1,4 +1,6 @@
-import axios from 'axios';
+import axios, { type InternalAxiosRequestConfig } from 'axios';
+import { RootSession } from './RootSession';
+import { StaffSession } from './StaffSession';
 
 /**
  * ============================================================================
@@ -68,6 +70,20 @@ interface RefreshResponse {
   expiresIn: number;
   refreshToken: string;
   refreshExpiresAt: string;
+}
+
+const refreshRequestsInFlight = new Map<string, Promise<RefreshResponse>>();
+
+function requestRefresh(refreshToken: string, communityId?: string) {
+  const key = `${refreshToken}:${communityId ?? ''}`;
+  const existing = refreshRequestsInFlight.get(key);
+  if (existing) return existing;
+
+  const request = casaApi.post<RefreshResponse>('/auth/refresh', { refreshToken, communityId })
+    .then(({ data }) => data)
+    .finally(() => refreshRequestsInFlight.delete(key));
+  refreshRequestsInFlight.set(key, request);
+  return request;
 }
 
 export function casaErrorMessage(error: unknown, fallback: string) {
@@ -144,10 +160,7 @@ export const CasaAuthService = {
 
   async refresh(refreshToken: string, communityId?: string) {
     try {
-      const { data } = await casaApi.post<RefreshResponse>('/auth/refresh', {
-        refreshToken,
-        communityId,
-      });
+      const data = await requestRefresh(refreshToken, communityId);
       return { success: true as const, data };
     } catch (error) {
       return {
@@ -227,3 +240,69 @@ export const CasaAuthService = {
     }
   },
 };
+
+type CasaSessionKind = 'root' | 'staff';
+type SessionAwareRequest = InternalAxiosRequestConfig & {
+  _casaRetried?: boolean;
+  _casaSessionKind?: CasaSessionKind;
+};
+
+function expireCasaSession(kind: CasaSessionKind) {
+  if (kind === 'root') RootSession.clear();
+  else StaffSession.clear();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('casa:session-expired', { detail: kind }));
+  }
+}
+
+function refreshCasaSession(kind: CasaSessionKind): Promise<string | null> {
+  const refreshToken = kind === 'root' ? RootSession.refreshToken() : StaffSession.refreshToken();
+  if (!refreshToken) return Promise.resolve(null);
+
+  return (async () => {
+    try {
+      const communityId = kind === 'staff' ? StaffSession.context()?.communityId : undefined;
+      const data = await requestRefresh(refreshToken, communityId);
+      if (kind === 'root') RootSession.updateTokens(data.accessToken, data.refreshToken);
+      else StaffSession.updateTokens(data.accessToken, data.refreshToken);
+      return data.accessToken;
+    } catch (error) {
+      if (axios.isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403)) {
+        expireCasaSession(kind);
+      }
+      return null;
+    }
+  })();
+}
+
+casaApi.interceptors.request.use((request) => {
+  const config = request as SessionAwareRequest;
+  const header = request.headers.get('Authorization');
+  const token = typeof header === 'string' ? header.replace(/^Bearer\s+/i, '') : '';
+  if (token && token === RootSession.token()) config._casaSessionKind = 'root';
+  else if (token && token === StaffSession.token()) config._casaSessionKind = 'staff';
+  return request;
+});
+
+casaApi.interceptors.response.use((response) => response, async (error: unknown) => {
+  if (!axios.isAxiosError(error) || error.response?.status !== 401 || !error.config) throw error;
+
+  const config = error.config as SessionAwareRequest;
+  const url = config.url ?? '';
+  if (config._casaRetried || url.includes('/auth/refresh') || url.includes('/auth/login')) throw error;
+
+  const header = config.headers.get('Authorization');
+  const failedToken = typeof header === 'string' ? header.replace(/^Bearer\s+/i, '') : '';
+  const kind = config._casaSessionKind ?? (failedToken === RootSession.token() ? 'root' : failedToken === StaffSession.token() ? 'staff' : undefined);
+  if (!kind || !failedToken) throw error;
+
+  const currentToken = kind === 'root' ? RootSession.token() : StaffSession.token();
+  const accessToken = currentToken && currentToken !== failedToken
+    ? currentToken
+    : await refreshCasaSession(kind);
+  if (!accessToken) throw error;
+
+  config._casaRetried = true;
+  config.headers.set('Authorization', `Bearer ${accessToken}`);
+  return casaApi.request(config);
+});

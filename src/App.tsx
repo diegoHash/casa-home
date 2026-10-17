@@ -104,7 +104,7 @@ function RootOnlyRoute({ children }: { children: React.ReactNode }) {
         return;
       }
       RootSession.save(
-        accessToken,
+        RootSession.token() || accessToken,
         identity.data.user,
         RootSession.refreshToken(),
       );
@@ -186,8 +186,9 @@ function StaffOnlyRoute({
       }
       if (identity.data.user.platformRole === 'ROOT') {
         const refreshToken = StaffSession.refreshToken();
+        const currentAccessToken = StaffSession.token() || accessToken;
         StaffSession.clear();
-        RootSession.save(accessToken, identity.data.user, refreshToken);
+        RootSession.save(currentAccessToken, identity.data.user, refreshToken);
         if (active) setStatus('root');
         return;
       }

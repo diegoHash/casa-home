@@ -5,6 +5,12 @@ import { MonitoringService, type MonitoringError, type MonitoringSnapshot } from
 const fmt = new Intl.DateTimeFormat('es-VE', { dateStyle: 'medium', timeStyle: 'medium' });
 const card = 'rounded-2xl border border-[#071a33]/8 bg-white p-5 shadow-[0_12px_35px_rgba(7,26,51,.04)]';
 
+function isAuthorizationError(error: unknown) {
+  if (!error || typeof error !== 'object' || !('response' in error)) return false;
+  const status = (error as { response?: { status?: number } }).response?.status;
+  return status === 401 || status === 403;
+}
+
 export default function MonitoringDashboard() {
   const [snapshot, setSnapshot] = useState<MonitoringSnapshot | null>(null);
   const [errors, setErrors] = useState<MonitoringError[]>([]);
@@ -16,7 +22,7 @@ export default function MonitoringDashboard() {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [busy, setBusy] = useState(false);
-  const [connection, setConnection] = useState<'connecting' | 'live' | 'reconnecting'>('connecting');
+  const [connection, setConnection] = useState<'connecting' | 'live' | 'reconnecting' | 'unauthorized'>('connecting');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [message, setMessage] = useState('');
 
@@ -52,17 +58,17 @@ export default function MonitoringDashboard() {
     void connect();
     return () => { cancelled = true; stream?.close(); if (retry) window.clearTimeout(retry); };
   }, [kind, communityId, userId, from, to]);
-  useEffect(() => { const timer = window.setInterval(() => { void MonitoringService.dashboard().then(setSnapshot).catch(() => setSnapshot((current) => current ? { ...current, services: { ...current.services, api: { status: 'error', checkedAt: new Date().toISOString() } } } : current)); }, 15_000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => { const timer = window.setInterval(() => { void MonitoringService.dashboard().then(setSnapshot).catch((error) => setSnapshot((current) => current ? { ...current, services: { ...current.services, api: { status: isAuthorizationError(error) ? 'unauthorized' : 'error', checkedAt: new Date().toISOString() } } } : current)); }, 15_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => { void Promise.all([MonitoringService.communities(), MonitoringService.users()]).then(([c, u]) => { setCommunities(c); setUsers(u); }).catch(() => undefined); }, []);
 
-  const countLabel = useMemo(() => connection === 'live' ? 'En vivo' : connection === 'connecting' ? 'Conectando' : 'Reconectando', [connection]);
+  const countLabel = useMemo(() => connection === 'live' ? 'En vivo' : connection === 'connecting' ? 'Conectando' : connection === 'unauthorized' ? 'Sesión vencida' : 'Reconectando', [connection]);
   return <div className="space-y-6">
     <header className="flex flex-wrap items-end justify-between gap-4"><div><p className="text-xs font-extrabold uppercase tracking-[.2em] text-[#9a742b]">Operaciones</p><h2 className="mt-2 text-3xl font-semibold tracking-[-.04em]">Monitoreo del sistema</h2><p className="mt-2 text-sm text-slate-500">Salud, sesiones y errores de los últimos {snapshot?.retentionDays ?? 30} días.</p></div><div className="flex items-center gap-3"><span className={`rounded-full px-3 py-1.5 text-xs font-bold ${connection === 'live' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}><span className="mr-2 inline-block h-2 w-2 rounded-full bg-current" />{countLabel}</span><button onClick={() => void load()} disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-[#071a33] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"><RefreshCw size={16} className={busy ? 'animate-spin' : ''} />Actualizar</button></div></header>
     {message && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{message}</div>}
     <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <Metric icon={<Server size={19} />} label="Backend API" status={snapshot?.services.api.status} detail={snapshot?.services.api.checkedAt ? `Chequeado ${fmt.format(new Date(snapshot.services.api.checkedAt))}` : 'Consultando'} />
       <Metric icon={<Database size={19} />} label="Base de datos" status={snapshot?.services.database.status} detail={snapshot?.services.database.checkedAt ? `Chequeado ${fmt.format(new Date(snapshot.services.database.checkedAt))}` : 'Consultando'} />
-      <article className={card}><div className="flex justify-between text-slate-500"><span className="text-sm font-semibold">Sesiones vigentes</span><UsersRound size={19} /></div><p className="mt-5 text-3xl font-semibold">{snapshot?.sessions.active ?? '—'}</p><p className="mt-2 text-xs text-slate-400">{snapshot?.sessions.uniqueUsers ?? '—'} usuarios únicos</p></article>
+      <article className={card}><div className="flex justify-between text-slate-500"><span className="text-sm font-semibold">Sesiones válidas</span><UsersRound size={19} /></div><p className="mt-5 text-3xl font-semibold">{snapshot?.sessions.active ?? '—'}</p><p className="mt-2 text-xs text-slate-400">{snapshot?.sessions.uniqueUsers ?? '—'} cuentas con token vigente · no indica conexión en vivo</p></article>
       <article className={card}><div className="flex justify-between text-slate-500"><span className="text-sm font-semibold">Errores conservados</span><AlertTriangle size={19} /></div><p className="mt-5 text-3xl font-semibold">{snapshot?.errors.last24Hours ?? '—'}</p><p className="mt-2 text-xs text-slate-400">Últimas 24 h · {snapshot?.errors.retained ?? 0} en retención</p></article>
     </section>
     <section className={card}>
@@ -81,5 +87,7 @@ export default function MonitoringDashboard() {
 }
 
 function Metric({ icon, label, status, detail }: { icon: React.ReactNode; label: string; status?: string; detail: string }) {
-  return <article className={card}><div className="flex items-center justify-between"><span className="text-sm font-semibold text-slate-500">{label}</span><span className="text-[#9a742b]">{icon}</span></div><span className={`mt-5 inline-flex rounded-full px-3 py-1.5 text-xs font-bold ${status === undefined ? 'bg-slate-100 text-slate-500' : status === 'ok' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{status === undefined ? 'Consultando' : status === 'ok' ? 'Operativo' : 'Con errores'}</span><p className="mt-2 text-xs text-slate-400">{detail}</p></article>;
+  const statusStyle = status === undefined ? 'bg-slate-100 text-slate-500' : status === 'ok' ? 'bg-emerald-50 text-emerald-700' : status === 'unauthorized' ? 'bg-amber-50 text-amber-700' : 'bg-rose-50 text-rose-700';
+  const statusLabel = status === undefined ? 'Consultando' : status === 'ok' ? 'Operativo' : status === 'unauthorized' ? 'Sesión requerida' : 'Con errores';
+  return <article className={card}><div className="flex items-center justify-between"><span className="text-sm font-semibold text-slate-500">{label}</span><span className="text-[#9a742b]">{icon}</span></div><span className={`mt-5 inline-flex rounded-full px-3 py-1.5 text-xs font-bold ${statusStyle}`}>{statusLabel}</span><p className="mt-2 text-xs text-slate-400">{detail}</p></article>;
 }
