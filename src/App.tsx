@@ -22,6 +22,7 @@ import { CasaAuthService } from './services/CasaAuthService';
 import { SessionTimeoutGuard } from './components/auth/SessionTimeoutGuard';
 import WorkspaceSwitcher from './components/workspace/WorkspaceSwitcher';
 import { workspaceIsEnabled } from './config/workspaceCatalog';
+import { BuildLabel } from './components/core/BuildLabel';
 
 function PublicDocumentLayout({ children }: { children: React.ReactNode }) {
   return <div className="min-h-screen bg-[#0a0a0a]">
@@ -311,6 +312,7 @@ export default function App() {
         <Route path="/solicitar-demo" element={<DemoRequest />} />
       </Routes>
       <WorkspaceSwitcher />
+      <BuildLabel />
     </SessionTimeoutGuard>
   );
 }
