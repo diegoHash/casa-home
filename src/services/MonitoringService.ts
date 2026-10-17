@@ -37,10 +37,12 @@ export const MonitoringService = {
   async users() {
     return (await casaApi.get<Array<{ id: string; email: string }>>('/monitoring/filters/users', authConfig())).data;
   },
-  async openStream(onError: (error: MonitoringError) => void, onState: (state: 'live' | 'reconnecting') => void, filters: { kind?: string; communityId?: string; userId?: string; from?: string; to?: string }) {
-    let source: EventSource | undefined;
+  async openStream(onError: (error: MonitoringError) => void, onState: (state: 'connecting' | 'live' | 'reconnecting' | 'unauthorized') => void, filters: { kind?: string; communityId?: string; userId?: string; from?: string; to?: string }) {
+    let controller: AbortController | undefined;
     let stopped = false;
     let retry: number | undefined;
+    let retryDelay = 3000;
+    let recoveredUnauthorizedOnce = false;
     const params = new URLSearchParams();
     if (filters.kind) params.set('kind', filters.kind);
     if (filters.communityId) params.set('communityId', filters.communityId);
@@ -53,21 +55,60 @@ export const MonitoringService = {
       if (params.toString()) url.search = params.toString();
       return url;
     };
+    const url = urlFor();
     const connect = async () => {
+      if (stopped) return;
+      onState(retryDelay === 3000 ? 'connecting' : 'reconnecting');
+      controller = new AbortController();
       try {
-        const grant = (await casaApi.post<{ token: string }>('/monitoring/stream-token', {}, authConfig())).data;
-        if (stopped) return;
-        const url = urlFor();
-        url.searchParams.set('token', grant.token);
-        source = new EventSource(url.toString());
-        source.addEventListener('error', event => {
-          try { onError(JSON.parse((event as MessageEvent).data) as MonitoringError); } catch { /* native connection error */ }
+        const response = await fetch(url, {
+          headers: { ...authConfig().headers, Accept: 'text/event-stream' },
+          signal: controller.signal,
         });
-        source.onopen = () => onState('live');
-        source.onerror = () => { onState('reconnecting'); source?.close(); if (!stopped) retry = window.setTimeout(connect, 3000); };
-      } catch { onState('reconnecting'); if (!stopped) retry = window.setTimeout(connect, 5000); }
+        if (response.status === 401 || response.status === 403) {
+          if (response.status === 401 && !recoveredUnauthorizedOnce) {
+            recoveredUnauthorizedOnce = true;
+            try {
+              // This authenticated Axios request runs the shared refresh flow.
+              await MonitoringService.dashboard();
+              if (!stopped) { void connect(); return; }
+            } catch { /* the session refresh interceptor will report expiry */ }
+          }
+          onState('unauthorized');
+          return;
+        }
+        if (!response.ok || !response.body) throw new Error(`No se pudo abrir el monitoreo (${response.status}).`);
+
+        onState('live');
+        recoveredUnauthorizedOnce = false;
+        retryDelay = 3000;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (!stopped) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split(/\r?\n\r?\n/);
+          buffer = frames.pop() ?? '';
+          for (const frame of frames) {
+            const lines = frame.split(/\r?\n/);
+            const eventType = lines.find(line => line.startsWith('event:'))?.slice(6).trim();
+            const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+            if (eventType === 'error' && data) {
+              try { onError(JSON.parse(data) as MonitoringError); } catch { /* ignore malformed stream events */ }
+            }
+          }
+        }
+        if (!stopped) throw new Error('El flujo de monitoreo se cerró.');
+      } catch {
+        if (stopped || controller.signal.aborted) return;
+        onState('reconnecting');
+        retry = window.setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30_000);
+      }
     };
-    await connect();
-    return { close() { stopped = true; source?.close(); if (retry) window.clearTimeout(retry); } };
+    void connect();
+    return { close() { stopped = true; controller?.abort(); if (retry) window.clearTimeout(retry); } };
   },
 };

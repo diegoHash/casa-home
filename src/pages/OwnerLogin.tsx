@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -22,6 +22,7 @@ import {
   isValidRegistrationEmail,
 } from '../utils/securityUtils';
 import { renderOwnerRegistrationEmailHtml } from '../utils/emailTemplates';
+import { prepareIdentityImage } from '../utils/identityImage';
 
 export interface OwnerAccessRequest {
   id: string;
@@ -74,6 +75,30 @@ export default function OwnerLogin() {
   const [regInviteCode, setRegInviteCode] = useState('');
   const [regSuccess, setRegSuccess] = useState<OwnerAccessRequest | null>(null);
   const [identityDocument, setIdentityDocument] = useState<File | null>(null);
+  const [identityDocumentPreview, setIdentityDocumentPreview] = useState('');
+  const [preparingIdentityDocument, setPreparingIdentityDocument] = useState(false);
+  useEffect(() => {
+    if (!identityDocumentPreview) return;
+    return () => URL.revokeObjectURL(identityDocumentPreview);
+  }, [identityDocumentPreview]);
+
+  const handleIdentityDocumentChange = async (file: File | null) => {
+    setError('');
+    setIdentityDocument(null);
+    setIdentityDocumentPreview('');
+    if (!file) return;
+
+    setPreparingIdentityDocument(true);
+    try {
+      const prepared = await prepareIdentityImage(file);
+      setIdentityDocument(prepared);
+      setIdentityDocumentPreview(URL.createObjectURL(prepared));
+    } catch (prepareError) {
+      setError(prepareError instanceof Error ? prepareError.message : 'No se pudo preparar la foto.');
+    } finally {
+      setPreparingIdentityDocument(false);
+    }
+  };
   const registrationEmailState = !regEmail.trim()
     ? 'idle'
     : isValidRegistrationEmail(regEmail)
@@ -683,32 +708,34 @@ export default function OwnerLogin() {
                             <span className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-3 text-center text-slate-600 transition hover:bg-slate-100">
                               <UploadCloud size={20} className="text-slate-400" />
                               <span className="mt-1 text-[11px] font-semibold">
-                                {identityDocument ? 'Foto adjunta' : 'Selecciona una imagen JPG o PNG'}
+                                {preparingIdentityDocument ? 'Preparando foto…' : identityDocument ? 'Foto JPG lista para enviar' : 'Selecciona una imagen JPG o PNG'}
                               </span>
-                              <span className="mt-0.5 text-[10px]">Máximo 2 MB · no se aceptan PDF</span>
+                              <span className="mt-0.5 text-[10px]">JPG/PNG hasta 20 MB · se optimiza aquí, sin servicios externos</span>
                             </span>
                             <input
                               type="file"
                               accept="image/jpeg,image/png,.jpg,.jpeg,.png"
-                              disabled={loading}
-                              onChange={(event) => {
-                                const selected = event.currentTarget.files?.[0] ?? null;
-                                setIdentityDocument(selected);
-                                if (selected && selected.size > 2 * 1024 * 1024) setError('La foto debe pesar como máximo 2 MB.');
-                                else if (selected?.type && !['image/jpeg', 'image/png'].includes(selected.type)) setError('Adjunta una foto JPG o PNG. No se aceptan archivos PDF.');
-                                else setError('');
-                              }}
+                              disabled={loading || preparingIdentityDocument}
+                              onChange={(event) => { void handleIdentityDocumentChange(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = ''; }}
                               className="sr-only"
-                              required
                             />
                           </label>
+                          {identityDocumentPreview && identityDocument && (
+                            <div className="flex items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-2.5">
+                              <img src={identityDocumentPreview} alt="Vista previa de la foto preparada" className="h-14 w-20 rounded-md object-cover" />
+                              <div className="min-w-0 text-[10px] text-emerald-900">
+                                <p className="font-bold">Foto preparada en este dispositivo</p>
+                                <p>{(identityDocument.size / 1024).toFixed(0)} KB · JPG</p>
+                              </div>
+                            </div>
+                          )}
                           <p className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[10px] leading-4 text-amber-900">
                             Usaremos la foto únicamente para que la administración de este condominio evalúe tu solicitud. Se eliminará si la solicitud es rechazada o, como máximo, a los 30 días. Al enviar la solicitud no podrás reemplazar el archivo. Si solicitas registro en otra comunidad, deberás adjuntarlo nuevamente en esa solicitud.
                           </p>
 
                           <button
                             type="submit"
-                            disabled={loading}
+                            disabled={loading || preparingIdentityDocument}
                             className="w-full rounded-xl bg-[#b08a3c] py-2.5 text-xs font-bold text-white transition hover:bg-[#96732f] shadow-xs cursor-pointer"
                           >
                             Enviar Solicitud a la Administración
