@@ -1233,6 +1233,12 @@ export const CommunityWorkspaceService = {
       `/billing/charge-notices/${noticeId}/issue`,
       {},
     ),
+  deleteChargeNotice: (noticeId: string, reason: string) =>
+    mutate<{ id: string; billingPeriodId: string; deleted: boolean }>(
+      'POST',
+      `/billing/charge-notices/${noticeId}/delete`,
+      { reason },
+    ),
   accessUsers: () => get<CommunityAccessRecord[]>('/core/access-users'),
   accessPersonnel: () =>
     get<AccessPersonnelRecord[]>('/core/access-users/personnel'),
