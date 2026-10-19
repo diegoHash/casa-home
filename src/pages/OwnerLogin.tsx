@@ -282,7 +282,8 @@ export default function OwnerLogin() {
       setIdentityDocument(null);
     } catch (backendErr: any) {
       const msg = casaErrorMessage(backendErr, 'No se pudo registrar la solicitud. Verifica el código de invitación.');
-      setError(msg);
+      const requestId = backendErr?.response?.data?.requestId;
+      setError(typeof requestId === 'string' && requestId ? `${msg} (Referencia: ${requestId})` : msg);
     } finally {
       setLoading(false);
     }

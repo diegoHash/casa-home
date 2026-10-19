@@ -11,6 +11,49 @@ function canvasToJpeg(canvas: HTMLCanvasElement, quality: number) {
   });
 }
 
+type DecodedIdentityImage = {
+  image: CanvasImageSource;
+  width: number;
+  height: number;
+  close: () => void;
+};
+
+async function decodeIdentityImage(file: File): Promise<DecodedIdentityImage> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file);
+      return {
+        image: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        close: () => bitmap.close(),
+      };
+    } catch {
+      // Fall through to the HTML image decoder for browsers with limited
+      // createImageBitmap support or files it cannot decode through that API.
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('Image decode failed'));
+      image.src = objectUrl;
+    });
+    return {
+      image,
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      close: () => URL.revokeObjectURL(objectUrl),
+    };
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+}
+
 /** Re-encodes identity photos locally so problematic PNG metadata/chunks are discarded. */
 export async function prepareIdentityImage(file: File): Promise<File> {
   const extension = file.name.toLowerCase().split('.').pop();
@@ -23,30 +66,30 @@ export async function prepareIdentityImage(file: File): Promise<File> {
     throw new Error('La imagen original debe pesar 20 MB o menos.');
   }
 
-  let bitmap: ImageBitmap;
+  let decodedImage: DecodedIdentityImage;
   try {
-    bitmap = await createImageBitmap(file);
+    decodedImage = await decodeIdentityImage(file);
   } catch {
     throw new Error('El navegador no pudo abrir esta imagen. Vuelve a guardarla como JPG o PNG e inténtalo de nuevo.');
   }
 
   try {
-    if (!bitmap.width || !bitmap.height || bitmap.width * bitmap.height > MAX_INPUT_PIXELS) {
+    if (!decodedImage.width || !decodedImage.height || decodedImage.width * decodedImage.height > MAX_INPUT_PIXELS) {
       throw new Error('La foto tiene demasiada resolución. Reduce su tamaño e inténtalo de nuevo.');
     }
 
-    const initialScale = Math.min(1, 3000 / Math.max(bitmap.width, bitmap.height));
+    const initialScale = Math.min(1, 3000 / Math.max(decodedImage.width, decodedImage.height));
     let smallest: Blob | null = null;
     for (const dimension of [3000, 2600, 2200]) {
-      const scale = Math.min(initialScale, dimension / Math.max(bitmap.width, bitmap.height));
+      const scale = Math.min(initialScale, dimension / Math.max(decodedImage.width, decodedImage.height));
       const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      canvas.width = Math.max(1, Math.round(decodedImage.width * scale));
+      canvas.height = Math.max(1, Math.round(decodedImage.height * scale));
       const context = canvas.getContext('2d', { alpha: false });
       if (!context) throw new Error('No se pudo preparar la foto en este navegador.');
       context.fillStyle = '#fff';
       context.fillRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      context.drawImage(decodedImage.image, 0, 0, canvas.width, canvas.height);
 
       for (const quality of [0.9, 0.86, 0.82]) {
         const output = await canvasToJpeg(canvas, quality);
@@ -66,6 +109,6 @@ export async function prepareIdentityImage(file: File): Promise<File> {
     }
     throw new Error('No se pudo reducir la foto a menos de 2 MB. Selecciona una imagen con menor resolución.');
   } finally {
-    bitmap.close();
+    decodedImage.close();
   }
 }
