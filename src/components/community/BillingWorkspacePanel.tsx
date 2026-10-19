@@ -21,6 +21,7 @@ import {
   ReceiptText,
   Search,
   Send,
+  Trash2,
   WalletCards,
   X,
 } from 'lucide-react';
@@ -47,6 +48,7 @@ type Dialog =
   | 'account'
   | 'payment'
   | 'notice'
+  | 'delete-notice'
   | 'print'
   | null;
 type View = 'catalog' | 'expenses' | 'expense-entry' | 'payments' | 'notices';
@@ -618,6 +620,7 @@ export function BillingWorkspacePanel({
                   canWrite={canWrite}
                   saving={saving}
                   onIssue={() => void issue()}
+                  onDelete={() => setDialog('delete-notice')}
                 />
               )
             ) : (
@@ -635,6 +638,7 @@ export function BillingWorkspacePanel({
             dialog === 'help' ||
             dialog === 'payment' ||
             dialog === 'notice' ||
+            dialog === 'delete-notice' ||
             dialog === 'print'
           }
           onClose={() => setDialog(null)}
@@ -796,6 +800,46 @@ export function BillingWorkspacePanel({
                 )
               }
             />
+          )}
+          {dialog === 'delete-notice' && period?.chargeNotice && (
+            <form
+              onSubmit={(event) =>
+                void submit(
+                  event,
+                  (form) =>
+                    CommunityWorkspaceService.deleteChargeNotice(
+                      period.chargeNotice!.id,
+                      String(form.get('reason')).trim(),
+                    ),
+                  'Aviso eliminado. El motivo quedó guardado en la auditoría.',
+                )
+              }
+            >
+              <p className="text-sm leading-6 text-slate-600">
+                Se eliminará el aviso preparado de {period.label}. Esta acción
+                solo está permitida si el período no tiene gastos ni pagos
+                aplicados. El motivo quedará registrado.
+              </p>
+              <label className="mt-4 block text-sm font-bold">
+                Motivo de eliminación
+                <textarea
+                  name="reason"
+                  rows={3}
+                  maxLength={500}
+                  required
+                  minLength={3}
+                  className={`${inputClass} mt-1.5`}
+                  placeholder="Ej.: Se creó por error para un mes futuro."
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={saving}
+                className="mt-5 w-full rounded-xl bg-rose-700 px-5 py-3.5 text-sm font-bold text-white disabled:opacity-50"
+              >
+                {saving ? 'Eliminando…' : 'Eliminar aviso'}
+              </button>
+            </form>
           )}
           {dialog === 'print' && period && core && (
             <NoticePrintOptions
@@ -1559,11 +1603,13 @@ function NoticesView({
   canWrite,
   saving,
   onIssue,
+  onDelete,
 }: {
   period: BillingSnapshot['billingPeriods'][number];
   canWrite: boolean;
   saving: boolean;
   onIssue: () => void;
+  onDelete: () => void;
 }) {
   if (!period.chargeNotice) {
     return (
@@ -1595,12 +1641,22 @@ function NoticesView({
           </p>
         </div>
         {canWrite && chargeNotice.status === 'PREPARED' && (
-          <Action
-            icon={Send}
-            label="Emitir y contabilizar"
-            disabled={saving}
-            onClick={onIssue}
-          />
+          <div className="flex flex-wrap gap-2">
+            {period.expenses.length === 0 && (
+              <Action
+                icon={Trash2}
+                label="Eliminar aviso"
+                disabled={saving}
+                onClick={onDelete}
+              />
+            )}
+            <Action
+              icon={Send}
+              label="Emitir y contabilizar"
+              disabled={saving}
+              onClick={onIssue}
+            />
+          </div>
         )}
       </div>
       <div className="mt-5 grid gap-3 sm:grid-cols-3">
@@ -2676,6 +2732,7 @@ const dialogTitle = {
   account: 'Crear cuenta contable de gasto',
   payment: 'Registrar pago del propietario',
   notice: 'Preparar aviso de cobro',
+  'delete-notice': 'Eliminar aviso de cobro',
   print: 'Imprimir aviso de cobro',
 };
 
