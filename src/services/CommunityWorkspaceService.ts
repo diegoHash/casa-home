@@ -441,6 +441,7 @@ export interface BillingSnapshot {
     bcvRate: string;
     status: string;
     canDelete: boolean;
+    deleteBlockReason: string | null;
     expenses: Array<{
       id: string;
       conceptId: string;

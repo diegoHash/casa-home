@@ -470,6 +470,29 @@ export function BillingWorkspacePanel({
           )}
         </div>
       </div>
+      {view === 'expenses' && !canWrite && (
+        <p className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+          Tu usuario tiene acceso de consulta. Para abrir o eliminar meses y gestionar gastos, el administrador debe habilitar la gestión financiera.
+        </p>
+      )}
+      {view === 'expenses' && canWrite && period && !canPost && (
+        <p className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+          Tu usuario puede gestionar el mes, pero necesita permiso para contabilizar gastos. Pide al administrador del condominio que habilite esa autorización.
+        </p>
+      )}
+      {view === 'expenses' && canWrite && canPost && period &&
+        !snapshot?.expenseCategories.some((category) => category._count.concepts > 0) && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+            <span>Para registrar el primer gasto, crea una categoría y un concepto.</span>
+            <button
+              type="button"
+              onClick={() => setView('catalog')}
+              className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-bold text-amber-900 hover:bg-amber-100"
+            >
+              Configurar categorías
+            </button>
+          </div>
+        )}
 
       <nav className="mt-7 flex w-full gap-1 overflow-x-auto rounded-2xl border border-[#071a33]/8 bg-white p-1.5 sm:w-fit">
         <ViewTab
@@ -1066,7 +1089,7 @@ function PeriodList({
         {periods.map((item) => (
           <div
             key={item.id}
-            className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition ${
+            className={`flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 transition ${
               item.id === selected
                 ? 'border-[#b08a3c] bg-[#f5efe2]'
                 : 'border-[#071a33]/8 bg-[#fbfaf7]'
@@ -1082,8 +1105,7 @@ function PeriodList({
             <button type="button" onClick={() => onPrint(item.id)} title={`Imprimir aviso · ${item.label}`} aria-label={`Imprimir aviso · ${item.label}`} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[#071a33]/12 bg-white px-2.5 py-2 text-xs font-bold text-[#071a33] transition hover:border-[#b08a3c] hover:text-[#805d20]">
               <Printer size={15} /> <span className="hidden sm:inline">Imprimir aviso</span>
             </button>
-            {canDelete &&
-              item.canDelete && (
+            {canDelete && item.canDelete && (
               <button
                 type="button"
                 onClick={() => onDelete(item.id)}
@@ -1093,6 +1115,11 @@ function PeriodList({
               >
                 <Trash2 size={15} /> <span className="hidden sm:inline">Eliminar</span>
               </button>
+            )}
+            {canDelete && item.status === 'DRAFT' && !item.canDelete && item.deleteBlockReason && (
+              <p className="basis-full px-1 text-xs leading-5 text-amber-800">
+                {item.deleteBlockReason}
+              </p>
             )}
           </div>
         ))}
