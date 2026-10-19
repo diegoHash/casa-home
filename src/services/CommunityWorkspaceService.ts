@@ -440,6 +440,7 @@ export interface BillingSnapshot {
     endsOn: string;
     bcvRate: string;
     status: string;
+    canDelete: boolean;
     expenses: Array<{
       id: string;
       conceptId: string;
@@ -1233,10 +1234,10 @@ export const CommunityWorkspaceService = {
       `/billing/charge-notices/${noticeId}/issue`,
       {},
     ),
-  deleteChargeNotice: (noticeId: string, reason: string) =>
-    mutate<{ id: string; billingPeriodId: string; deleted: boolean }>(
+  deleteBillingPeriod: (periodId: string, reason: string) =>
+    mutate<{ id: string; periodKey: string; deleted: boolean }>(
       'POST',
-      `/billing/charge-notices/${noticeId}/delete`,
+      `/billing/periods/${periodId}/delete`,
       { reason },
     ),
   accessUsers: () => get<CommunityAccessRecord[]>('/core/access-users'),

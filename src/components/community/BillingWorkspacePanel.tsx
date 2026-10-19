@@ -48,7 +48,7 @@ type Dialog =
   | 'account'
   | 'payment'
   | 'notice'
-  | 'delete-notice'
+  | 'delete-period'
   | 'print'
   | null;
 type View = 'catalog' | 'expenses' | 'expense-entry' | 'payments' | 'notices';
@@ -599,7 +599,12 @@ export function BillingWorkspacePanel({
           <PeriodList
             periods={snapshot?.billingPeriods ?? []}
             selected={periodId}
+            canDelete={canWrite}
             onSelect={setPeriodId}
+            onDelete={(id) => {
+              setPeriodId(id);
+              setDialog('delete-period');
+            }}
             onPrint={(id) => {
               setPeriodId(id);
               setPrintMode('GENERAL');
@@ -620,7 +625,6 @@ export function BillingWorkspacePanel({
                   canWrite={canWrite}
                   saving={saving}
                   onIssue={() => void issue()}
-                  onDelete={() => setDialog('delete-notice')}
                 />
               )
             ) : (
@@ -638,7 +642,7 @@ export function BillingWorkspacePanel({
             dialog === 'help' ||
             dialog === 'payment' ||
             dialog === 'notice' ||
-            dialog === 'delete-notice' ||
+            dialog === 'delete-period' ||
             dialog === 'print'
           }
           onClose={() => setDialog(null)}
@@ -801,24 +805,25 @@ export function BillingWorkspacePanel({
               }
             />
           )}
-          {dialog === 'delete-notice' && period?.chargeNotice && (
+          {dialog === 'delete-period' && period && (
             <form
               onSubmit={(event) =>
                 void submit(
                   event,
                   (form) =>
-                    CommunityWorkspaceService.deleteChargeNotice(
-                      period.chargeNotice!.id,
+                    CommunityWorkspaceService.deleteBillingPeriod(
+                      period.id,
                       String(form.get('reason')).trim(),
                     ),
-                  'Aviso eliminado. El motivo quedó guardado en la auditoría.',
+                  'Mes vacío eliminado. El motivo quedó guardado en la auditoría.',
                 )
               }
             >
               <p className="text-sm leading-6 text-slate-600">
-                Se eliminará el aviso preparado de {period.label}. Esta acción
-                solo está permitida si el período no tiene gastos ni pagos
-                aplicados. El motivo quedará registrado.
+                Se eliminará el mes de gestión vacío de {period.label}, incluido
+                cualquier aviso aún no emitido. Solo se permite si no existen
+                gastos, pagos ni asientos contables asociados. El motivo quedará
+                registrado en la auditoría.
               </p>
               <label className="mt-4 block text-sm font-bold">
                 Motivo de eliminación
@@ -837,7 +842,7 @@ export function BillingWorkspacePanel({
                 disabled={saving}
                 className="mt-5 w-full rounded-xl bg-rose-700 px-5 py-3.5 text-sm font-bold text-white disabled:opacity-50"
               >
-                {saving ? 'Eliminando…' : 'Eliminar aviso'}
+                {saving ? 'Eliminando…' : 'Eliminar mes vacío'}
               </button>
             </form>
           )}
@@ -1040,12 +1045,16 @@ function FinancialHelp() {
 function PeriodList({
   periods,
   selected,
+  canDelete,
   onSelect,
+  onDelete,
   onPrint,
 }: {
   periods: BillingSnapshot['billingPeriods'];
   selected: string;
+  canDelete: boolean;
   onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
   onPrint: (id: string) => void;
 }) {
   return (
@@ -1073,6 +1082,18 @@ function PeriodList({
             <button type="button" onClick={() => onPrint(item.id)} title={`Imprimir aviso · ${item.label}`} aria-label={`Imprimir aviso · ${item.label}`} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[#071a33]/12 bg-white px-2.5 py-2 text-xs font-bold text-[#071a33] transition hover:border-[#b08a3c] hover:text-[#805d20]">
               <Printer size={15} /> <span className="hidden sm:inline">Imprimir aviso</span>
             </button>
+            {canDelete &&
+              item.canDelete && (
+              <button
+                type="button"
+                onClick={() => onDelete(item.id)}
+                title={`Eliminar mes vacío · ${item.label}`}
+                aria-label={`Eliminar mes vacío · ${item.label}`}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-2.5 py-2 text-xs font-bold text-rose-700 transition hover:border-rose-400 hover:bg-rose-50"
+              >
+                <Trash2 size={15} /> <span className="hidden sm:inline">Eliminar</span>
+              </button>
+            )}
           </div>
         ))}
         {!periods.length && (
@@ -1603,13 +1624,11 @@ function NoticesView({
   canWrite,
   saving,
   onIssue,
-  onDelete,
 }: {
   period: BillingSnapshot['billingPeriods'][number];
   canWrite: boolean;
   saving: boolean;
   onIssue: () => void;
-  onDelete: () => void;
 }) {
   if (!period.chargeNotice) {
     return (
@@ -1642,14 +1661,6 @@ function NoticesView({
         </div>
         {canWrite && chargeNotice.status === 'PREPARED' && (
           <div className="flex flex-wrap gap-2">
-            {period.expenses.length === 0 && (
-              <Action
-                icon={Trash2}
-                label="Eliminar aviso"
-                disabled={saving}
-                onClick={onDelete}
-              />
-            )}
             <Action
               icon={Send}
               label="Emitir y contabilizar"
@@ -2732,7 +2743,7 @@ const dialogTitle = {
   account: 'Crear cuenta contable de gasto',
   payment: 'Registrar pago del propietario',
   notice: 'Preparar aviso de cobro',
-  'delete-notice': 'Eliminar aviso de cobro',
+  'delete-period': 'Eliminar mes de gestión vacío',
   print: 'Imprimir aviso de cobro',
 };
 
