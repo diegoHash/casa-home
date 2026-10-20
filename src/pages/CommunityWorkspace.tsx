@@ -482,6 +482,7 @@ export default function CommunityWorkspace() {
                 setAdministrationDialog('edit-person');
               }}
               onEditProperty={(property) => navigate(`/workspace/inmuebles/${property.id}/editar`)}
+              onImportProperties={() => navigate('/workspace/inmuebles/importar')}
               onDeactivateProperty={async (property) => {
                 if (!window.confirm(`¿Desactivar el inmueble ${property.code}? Se conservará su historial.`)) return;
                 try {
@@ -539,6 +540,7 @@ function WorkspaceContent({
   onEditPerson,
   onDeactivatePerson,
   onEditProperty,
+  onImportProperties,
   onDeactivateProperty,
 }: {
   section: Section;
@@ -557,6 +559,7 @@ function WorkspaceContent({
   onEditPerson: (person: CoreSnapshot['people'][number]['person']) => void;
   onDeactivatePerson: (person: CoreSnapshot['people'][number]['person']) => Promise<void> | void;
   onEditProperty: (property: CoreSnapshot['properties'][number]) => void;
+  onImportProperties: () => void;
   onDeactivateProperty: (property: CoreSnapshot['properties'][number]) => Promise<void> | void;
 }) {
   const [selectedMethodInfo, setSelectedMethodInfo] = useState<
@@ -637,6 +640,8 @@ function WorkspaceContent({
 
   if (section === 'inmuebles') {
     const canWriteProperties = hasScope(grantedScopes, 'core.properties.write');
+    const canImportProperties = ['core.properties.write', 'core.people.write', 'core.ownerships.write']
+      .every((scope) => hasScope(grantedScopes, scope));
     return (
       <SectionLayout eyebrow="Inventario" title="Inmuebles de la comunidad" description="Apartamentos, townhouses y locales comerciales registrados en el núcleo.">
         {hasScope(grantedScopes, 'core.properties.write') && (
@@ -651,6 +656,9 @@ function WorkspaceContent({
                 label: 'Nuevo inmueble',
                 onClick: () => onOpenAdministration('property'),
               },
+              ...(canImportProperties
+                ? [{ label: 'Importar', onClick: onImportProperties, secondary: true }]
+                : []),
             ]}
           />
         )}
