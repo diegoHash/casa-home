@@ -5,6 +5,7 @@ import './index.css';
 import { HeroSection } from '@/components/blocks/hero-section-5';
 import Conferences from './pages/Conferences';
 import CommunityWorkspace from './pages/CommunityWorkspace';
+import PropertyImportPage from './pages/PropertyImportPage';
 import ContextSelection from './pages/ContextSelection';
 import WorkspaceSelection from './pages/WorkspaceSelection';
 import DemoRequest from './pages/DemoRequest';
@@ -295,6 +296,10 @@ export default function App() {
         <Route
           path="/workspace"
           element={<StaffOnlyRoute requireWorkspace><CommunityWorkspace /></StaffOnlyRoute>}
+        />
+        <Route
+          path="/workspace/inmuebles/importar"
+          element={<StaffOnlyRoute requireWorkspace><PropertyImportPage /></StaffOnlyRoute>}
         />
         <Route
           path="/workspace/inmuebles/:propertyId/editar"

@@ -741,6 +741,31 @@ export const CommunityWorkspaceService = {
       '/core/properties',
       input,
     ),
+  importProperties: (input: {
+    rows: Array<{
+      code: string;
+      kind: 'APARTMENT' | 'TOWNHOUSE' | 'COMMERCIAL' | 'HOUSE' | 'QUINTA' | 'PENTHOUSE';
+      aliquot?: number;
+      maximumOccupancy?: number;
+      braceletQuota?: number;
+      parkingSpace?: string;
+      parkingCapacity?: number;
+      effectiveDate: string;
+      owners: Array<{
+        firstName: string;
+        lastName: string;
+        documentType: 'V' | 'E' | 'J' | 'P';
+        documentNumber: string;
+        phone?: string;
+        email?: string;
+        ownershipPercentage: number;
+      }>;
+    }>;
+  }) => mutate<{ importedProperties: number; importedOwners: number }>(
+    'POST',
+    '/core/properties/import',
+    input,
+  ),
   createOwnership: (input: {
     personId: string;
     propertyId: string;
